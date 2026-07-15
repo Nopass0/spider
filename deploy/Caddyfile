@@ -2,7 +2,9 @@
 # Caddy автоматически выпускает TLS-сертификат через Let's Encrypt (HTTP-01)
 # для spider.lowkey.su и проксирует на Go-сервер :8080.
 #
-# Для wildcard (*.spider.lowkey.su) см. docs/DEPLOY.md — нужен DNS-01 challenge.
+# Логи идут в journald (по умолчанию под systemd) — см. `journalctl -u caddy`.
+# Файл-лог намеренно убран: Caddy работает под пользователем `caddy` и не имеет
+# прав на /var/log/spider. Для wildcard (*.spider.lowkey.su) см. docs/DEPLOY.md.
 
 {
 	# email для уведомлений Let's Encrypt (опционально)
@@ -31,13 +33,5 @@ spider.lowkey.su {
 		Referrer-Policy "no-referrer"
 		# CSP: только свои источники (панель встроена).
 		Content-Security-Policy "default-src 'self'; connect-src 'self' wss: ws:; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
-	}
-
-	# Логи доступа.
-	log {
-		output file /var/log/spider/caddy-access.log {
-			roll_size 50mb
-			roll_keep 5
-		}
 	}
 }

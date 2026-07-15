@@ -61,6 +61,11 @@ setup_dirs() {
   fi
   install -d -o spider -g spider -m 0750 "$DATA_DIR" "$LOG_DIR"
   install -d -o root -g root -m 0750 "$(dirname "$ENV_FILE")"
+  # Логи Caddy сейчас идут в journald, но если админ вернёт file-лог —
+  # дадим пользователю caddy доступ к /var/log/spider через группу.
+  if id -u caddy >/dev/null 2>&1; then
+    usermod -aG spider caddy 2>/dev/null || true
+  fi
 }
 
 # --- бинарь сервера ---
@@ -145,16 +150,20 @@ start_services() {
     caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile || true
   fi
   sleep 2
+  local rc=0
   if systemctl is-active --quiet spider-server; then
     log "✓ spider-server активен"
   else
     err "spider-server не стартовал; проверьте: journalctl -u spider-server -e"
+    rc=1
   fi
   if systemctl is-active --quiet caddy; then
     log "✓ caddy активен"
   else
     err "caddy не стартовал; проверьте: journalctl -u caddy -e"
+    rc=1
   fi
+  return $rc
 }
 
 main() {
