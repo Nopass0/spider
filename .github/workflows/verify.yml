@@ -1,0 +1,36 @@
+name: verify
+
+# Проверка доступности прод-сервера из интернета (с GitHub runner).
+# Запускается вручную или автоматически через 15 минут после deploy.
+on:
+  workflow_dispatch:
+  schedule:
+    # раз в 30 минут для мониторинга
+    - cron: '*/30 * * * *'
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Проверка HTTPS (spider.lowkey.su)
+        run: |
+          echo "=== DNS ==="
+          dig +short spider.lowkey.su A || nslookup spider.lowkey.su
+          echo
+          echo "=== https://spider.lowkey.su/healthz ==="
+          curl -sS -m 20 -w "\n→ HTTP %{http_code} | TLS verify: %{ssl_verify_result} | connect %{time_connect}s | total %{time_total}s\n" \
+            https://spider.lowkey.su/healthz || echo "❌ healthz недоступен"
+          echo
+          echo "=== сертификат TLS ==="
+          echo | openssl s_client -connect spider.lowkey.su:443 -servername spider.lowkey.su 2>/dev/null \
+            | openssl x509 -noout -subject -issuer -dates 2>/dev/null || echo "❌ TLS-сертификат не получен"
+          echo
+          echo "=== редирект HTTP→HTTPS ==="
+          curl -sS -m 15 -I http://spider.lowkey.su/ 2>&1 | grep -iE "HTTP/|location" || echo "❌ HTTP-редирект не работает"
+          echo
+          echo "=== панель (index.html, первая строка) ==="
+          curl -sS -m 15 https://spider.lowkey.su/ 2>/dev/null | head -1 || echo "❌ панель недоступна"
+          echo
+          echo "=== админ-API (без токена → 401) ==="
+          curl -sS -m 15 -o /dev/null -w "→ HTTP %{http_code} (ожидается 401)\n" \
+            https://spider.lowkey.su/admin/devices || echo "❌"
