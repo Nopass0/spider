@@ -56,9 +56,12 @@ jobs:
           sshpass -e ssh -o StrictHostKeyChecking=accept-new "$SSH_USER@$SSH_HOST" \
             "SPIDER_ADMIN_KEY='$SPIDER_ADMIN_KEY' bash /tmp/spider-deploy/install.sh /tmp/spider-deploy/spider-server"
 
-      - name: Health check
+      - name: Health check + диагностика
+        env:
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
         run: |
           # Ретраи: Caddy только что выпускает сертификат, нужно время.
+          export SSHPASS="$SSH_PASSWORD"
           ok=0
           for i in $(seq 1 12); do
             echo "попытка $i/12…"
@@ -66,5 +69,12 @@ jobs:
             sleep 10
           done
           if [ "$ok" -ne 1 ]; then
-            echo "⚠ сервер не ответил на healthz за ~2мин — возможно, Caddy ещё выпускает TLS-сертификат."
+            echo "⚠ сервер не ответил на healthz — собираю диагностику с сервера…"
+            sshpass -e ssh -o StrictHostKeyChecking=accept-new "$SSH_USER@$SSH_HOST" \
+              'echo "=== spider-server ==="; systemctl status spider-server --no-pager -l | head -20; \
+               echo "=== caddy ==="; systemctl status caddy --no-pager -l | head -25; \
+               echo "=== caddy logs ==="; journalctl -u caddy -n 40 --no-pager; \
+               echo "=== listening ports ==="; (ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null) | grep -E ":80|:443|:8080" || echo "ничего на 80/443/8080"; \
+               echo "=== Caddyfile ==="; cat /etc/caddy/Caddyfile; \
+               echo "=== firewall ==="; (ufw status 2>/dev/null || iptables -L INPUT -n 2>/dev/null | head -20) || echo "no firewall tooling";'
           fi

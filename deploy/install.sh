@@ -106,23 +106,54 @@ install_systemd() {
 
 # --- Caddy ---
 install_caddy() {
-  log "установка Caddyfile…"
+  log "установка Caddyfile (полная замена)…"
   install -d -m 0755 /etc/caddy
-  install -m 0644 "$(dirname "$0")/Caddyfile" /etc/caddy/Caddyfile
+  # Бэкапим старый конфиг на всякий случай.
+  [ -f /etc/caddy/Caddyfile ] && cp -a /etc/caddy/Caddyfile /etc/caddy/Caddyfile.spider.bak
+  # Принудительно перезаписываем нашим конфигом.
+  cat "$(dirname "$0")/Caddyfile" > /etc/caddy/Caddyfile
   # Caddy сам выпустит сертификат Let's Encrypt при старте.
+
+  # Если файл заблокирован immutable или read-only — снимаем.
+  chattr -i /etc/caddy/Caddyfile 2>/dev/null || true
+  chmod 0644 /etc/caddy/Caddyfile
+}
+
+# --- файрвол: убедиться, что 80/443 открыты ---
+open_firewall() {
+  if command -v ufw >/dev/null 2>&1; then
+    log "открытие портов 80/443 в ufw…"
+    ufw allow 80/tcp >/dev/null 2>&1 || true
+    ufw allow 443/tcp >/dev/null 2>&1 || true
+  fi
+  # iptables-nft напрямую не трогаем — пусть админ решает.
 }
 
 # --- запуск ---
 start_services() {
   log "запуск spider-server…"
-  systemctl enable --now spider-server
-  log "перезапуск Caddy…"
-  systemctl enable --now caddy 2>/dev/null || systemctl restart caddy
+  systemctl enable spider-server
+  systemctl restart spider-server
+  log "применение Caddyfile…"
+  # Сначала проверяем синтаксис, затем перезапускаем Caddy целиком
+  # (reload может не подхватить смену домена/сертификата).
+  if caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile 2>/dev/null; then
+    systemctl enable caddy 2>/dev/null || true
+    systemctl restart caddy
+  else
+    err "Caddyfile невалиден; проверьте /etc/caddy/Caddyfile"
+    caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile || true
+  fi
   sleep 2
   if systemctl is-active --quiet spider-server; then
     log "✓ spider-server активен"
   else
     err "spider-server не стартовал; проверьте: journalctl -u spider-server -e"
+  fi
+  if systemctl is-active --quiet caddy; then
+    log "✓ caddy активен"
+  else
+    err "caddy не стартовал; проверьте: journalctl -u caddy -e"
   fi
 }
 
@@ -135,6 +166,7 @@ main() {
   write_env
   install_systemd
   install_caddy
+  open_firewall
   start_services
   log "✓ установка завершена. Панель: https://${DOMAIN}"
 }
