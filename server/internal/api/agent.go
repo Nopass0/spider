@@ -202,12 +202,14 @@ func (a *API) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer c.Close(websocket.StatusNormalClosure, "bye")
 
-	ctx := c.CloseRead(r.Context()) // читаем в фон, ошибки → ctx.Done
+	ctx, cancel := context.WithCancel(r.Context())
+	defer cancel()
+
 	sink := newWSAgentSink(c, sess, a.log)
 	unsub := a.hub.RegisterAgent(deviceID, sink)
 	defer unsub()
 	defer a.store.TouchDevice(context.Background(), deviceID, false)
-	a.store.TouchDevice(r.Context(), deviceID, true)
+	a.store.TouchDevice(ctx, deviceID, true)
 
 	// Отправляем накопленные queued-команды при подключении.
 	if batch, _ := a.dispatcher.FlushQueuedFor(ctx, deviceID); len(batch) > 0 {
@@ -220,12 +222,24 @@ func (a *API) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Читаем входящие сообщения (результаты, heartbeat) в отдельной горутине.
-	go a.readAgentLoop(r.Context(), deviceID, sess, c)
+	// При ошибке чтения — отменяем ctx, что разблокирует писателя.
+	go func() {
+		a.readAgentLoop(ctx, deviceID, sess, c)
+		cancel()
+	}()
 
-	// Блокируем, пока соединение живо: отправляем то, что sink кладёт в канал.
-	for env := range sink.out {
-		if err := writeWSJSON(ctx, c, env); err != nil {
+	// Писатель: отправляем то, что sink кладёт в канал, пока ctx жив.
+	for {
+		select {
+		case <-ctx.Done():
 			return
+		case env, ok := <-sink.out:
+			if !ok {
+				return
+			}
+			if err := writeWSJSON(ctx, c, env); err != nil {
+				return
+			}
 		}
 	}
 }

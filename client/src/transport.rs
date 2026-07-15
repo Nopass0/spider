@@ -16,7 +16,7 @@ use tracing::{info, warn};
 
 use crate::crypto::{Envelope, Session, KEY_SIZE};
 use crate::executor;
-use crate::proto::{self, ServerInfo, WireCommand};
+use crate::proto::{self, ServerInfo, WireCommand, WireResult};
 
 /// Разделяемый ключ сессии — из него задачи создают Session по мере надобности.
 #[derive(Clone)]
@@ -41,6 +41,14 @@ pub enum AgentEvent {
     TransportSwitched(&'static str),
 }
 
+/// Превратить WireResult в событие для логирования.
+fn result_to_event(res: &WireResult) -> Result<AgentEvent> {
+    Ok(AgentEvent::CommandDone {
+        id: res.command_id.clone(),
+        exit_code: res.exit_code,
+    })
+}
+
 /// Главный цикл агента. Блокирует до критической ошибки.
 pub async fn run(
     server: &str,
@@ -48,7 +56,9 @@ pub async fn run(
     key: SharedKey,
     event_tx: mpsc::UnboundedSender<AgentEvent>,
 ) -> Result<()> {
-    let (result_tx, mut result_rx) = mpsc::unbounded_channel::<Envelope>();
+    // Канал результатов: в WS режиме оборачиваются в Envelope, в long-poll
+    // отправляются как есть (сервер ожидает WireResult).
+    let (result_tx, mut result_rx) = mpsc::unbounded_channel::<WireResult>();
 
     loop {
         match ws_run(server, device_id, &key, &event_tx, &result_tx, &mut result_rx).await {
@@ -67,8 +77,9 @@ pub async fn run(
     }
 }
 
-/// Обработать одну команду: выполнить и вернуть результирующий envelope.
-pub async fn handle_command(key: &SharedKey, env: &Envelope) -> Option<Envelope> {
+/// Обработать одну команду: выполнить и вернуть результат (без шифрования —
+/// шифрует WS-транспорт; long-poll отправляет как есть).
+pub async fn handle_command(key: &SharedKey, env: &Envelope) -> Option<WireResult> {
     if env.ty != proto::msg::COMMAND {
         return None;
     }
@@ -90,19 +101,17 @@ pub async fn handle_command(key: &SharedKey, env: &Envelope) -> Option<Envelope>
     let outcome = match executor::execute(&cmd.command, cmd.timeout_sec).await {
         Ok(o) => o,
         Err(e) => {
-            let res = proto::WireResult {
+            return Some(WireResult {
                 command_id: cmd.id.clone(),
                 exit_code: -1,
                 stdout_b64: String::new(),
                 stderr_b64: String::new(),
                 duration_ms: 0,
                 error: format!("executor error: {e}"),
-            };
-            return Envelope::seal(&session, proto::msg::COMMAND_RESULT, &res).ok();
+            });
         }
     };
-    let res = outcome.to_wire(&cmd.id);
-    Envelope::seal(&session, proto::msg::COMMAND_RESULT, &res).ok()
+    Some(outcome.to_wire(&cmd.id))
 }
 
 // ---------------------------------------------------------------------------
@@ -114,8 +123,8 @@ async fn ws_run(
     device_id: &str,
     key: &SharedKey,
     event_tx: &mpsc::UnboundedSender<AgentEvent>,
-    result_tx: &mpsc::UnboundedSender<Envelope>,
-    result_rx: &mut mpsc::UnboundedReceiver<Envelope>,
+    result_tx: &mpsc::UnboundedSender<WireResult>,
+    result_rx: &mut mpsc::UnboundedReceiver<WireResult>,
 ) -> Result<()> {
     let ws_url = ws_url(server, device_id);
     info!("подключение WS: {ws_url}");
@@ -134,14 +143,24 @@ async fn ws_run(
                 let msg = msg.context("ws read")?;
                 match msg {
                     Message::Text(text) => {
-                        if let Err(e) = handle_text(key, &text, event_tx, result_tx).await {
-                            warn!("обработка ws-сообщения: {e}");
+                        match handle_text(key, &text, event_tx, result_tx).await {
+                            Ok(Some(pong)) => {
+                                let txt = serde_json::to_string(&pong)?;
+                                let _ = ws.send(Message::Text(txt)).await;
+                            }
+                            Ok(None) => {}
+                            Err(e) => warn!("обработка ws-сообщения: {e}"),
                         }
                     }
                     Message::Binary(b) => {
                         let text = String::from_utf8_lossy(&b).into_owned();
-                        if let Err(e) = handle_text(key, &text, event_tx, result_tx).await {
-                            warn!("обработка ws-binary: {e}");
+                        match handle_text(key, &text, event_tx, result_tx).await {
+                            Ok(Some(pong)) => {
+                                let txt = serde_json::to_string(&pong)?;
+                                let _ = ws.send(Message::Text(txt)).await;
+                            }
+                            Ok(None) => {}
+                            Err(e) => warn!("обработка ws-binary: {e}"),
                         }
                     }
                     Message::Ping(p) => { let _ = ws.send(Message::Pong(p)).await; }
@@ -158,21 +177,31 @@ async fn ws_run(
                     }
                 }
             }
-            Some(env) = result_rx.recv() => {
-                let txt = serde_json::to_string(&env)?;
-                ws.send(Message::Text(txt)).await.context("ws result send")?;
+            Some(res) = result_rx.recv() => {
+                // Шифруем результат перед отправкой по WS.
+                if let Ok(session) = key.session() {
+                    if let Ok(env) = Envelope::seal(&session, proto::msg::COMMAND_RESULT, &res) {
+                        if let Ok(txt) = serde_json::to_string(&env) {
+                            if ws.send(Message::Text(txt)).await.is_err() {
+                                return Err(anyhow::anyhow!("ws result send failed"));
+                            }
+                            if let Ok(ev) = result_to_event(&res) { let _ = event_tx.send(ev); }
+                        }
+                    }
+                }
             }
         }
     }
 }
 
 /// Разобрать и обработать текстовое ws-сообщение (envelope).
+/// Возвращает optional raw-сообщение для немедленной отправки в WS (pong).
 async fn handle_text(
     key: &SharedKey,
     text: &str,
     event_tx: &mpsc::UnboundedSender<AgentEvent>,
-    result_tx: &mpsc::UnboundedSender<Envelope>,
-) -> Result<()> {
+    result_tx: &mpsc::UnboundedSender<WireResult>,
+) -> Result<Option<Envelope>> {
     let env: Envelope = serde_json::from_str(text).context("decode envelope")?;
     let session = key.session()?;
     match env.ty.as_str() {
@@ -195,12 +224,13 @@ async fn handle_text(
             }
         }
         proto::msg::PING => {
-            let pong = Envelope::seal(&session, proto::msg::PONG, &serde_json::json!({}))?;
-            let _ = result_tx.send(pong);
+            return Ok(Some(
+                Envelope::seal(&session, proto::msg::PONG, &serde_json::json!({}))?,
+            ));
         }
         _ => {}
     }
-    Ok(())
+    Ok(None)
 }
 
 // ---------------------------------------------------------------------------
@@ -212,8 +242,8 @@ async fn longpoll_run(
     device_id: &str,
     key: &SharedKey,
     event_tx: &mpsc::UnboundedSender<AgentEvent>,
-    result_tx: &mpsc::UnboundedSender<Envelope>,
-    result_rx: &mut mpsc::UnboundedReceiver<Envelope>,
+    result_tx: &mpsc::UnboundedSender<WireResult>,
+    result_rx: &mut mpsc::UnboundedReceiver<WireResult>,
 ) -> Result<()> {
     let base = server.trim_end_matches('/').to_string();
     let url = format!("{base}/agent/connect?device_id={device_id}");
@@ -258,10 +288,10 @@ async fn longpoll_run(
 }
 
 /// Собрать накопленные результаты из канала без блокировки.
-async fn drain_results(rx: &mut mpsc::UnboundedReceiver<Envelope>) -> Vec<Envelope> {
+async fn drain_results(rx: &mut mpsc::UnboundedReceiver<WireResult>) -> Vec<WireResult> {
     let mut out = Vec::new();
-    while let Ok(env) = rx.try_recv() {
-        out.push(env);
+    while let Ok(res) = rx.try_recv() {
+        out.push(res);
     }
     out
 }
