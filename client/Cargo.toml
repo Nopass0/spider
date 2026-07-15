@@ -1,0 +1,64 @@
+[package]
+name = "spider-agent"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+description = "Spider agent — remote console for owned machine pools"
+license = "Proprietary"
+authors = ["Spider Admin <admin@spider.lowkey.su>"]
+
+[[bin]]
+name = "spider-agent"
+path = "src/main.rs"
+
+[features]
+default = ["autostart", "self-update"]
+# Управление добавлением в автозапуск (systemd unit / Windows Service).
+autostart = []
+# Автообновление с проверкой ed25519-подписи (атомарная замена + рестарт).
+self-update = ["dep:ed25519-dalek", "dep:zip"]
+
+[dependencies]
+# async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.23", features = ["rustls-tls-webpki-roots"] }
+# HTTP
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+# serde
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# crypto (зеркало серверного слоя)
+aes-gcm = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+ed25519-dalek = { version = "2", optional = true, features = ["rand_core"] }
+rand = "0.8"
+# encoding
+base64 = "0.22"
+hex = "0.4"
+# cli + config
+clap = { version = "4", features = ["derive", "env"] }
+toml = "0.8"
+# system info
+sysinfo = "0.32"
+# logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+# errors
+anyhow = "1"
+thiserror = "1"
+# self-update: распаковка архива
+zip = { version = "2", optional = true }
+# async traits helpers
+futures-util = "0.3"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
