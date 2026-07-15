@@ -198,9 +198,11 @@ func (a *API) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 		InsecureSkipVerify: true,
 	})
 	if err != nil {
-		return // websocket.Accept уже написал ошибку в ResponseWriter
+		a.log.Warn("agent ws accept failed", "device_id", deviceID, "err", err)
+		return
 	}
 	defer c.Close(websocket.StatusNormalClosure, "bye")
+	a.log.Info("agent ws connected", "device_id", deviceID)
 
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
@@ -232,12 +234,15 @@ func (a *API) handleAgentWS(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-ctx.Done():
+			a.log.Info("agent ws writer done (ctx)", "device_id", deviceID)
 			return
 		case env, ok := <-sink.out:
 			if !ok {
+				a.log.Info("agent ws writer done (sink closed)", "device_id", deviceID)
 				return
 			}
 			if err := writeWSJSON(ctx, c, env); err != nil {
+				a.log.Info("agent ws writer done (write err)", "device_id", deviceID, "err", err)
 				return
 			}
 		}
@@ -249,6 +254,7 @@ func (a *API) readAgentLoop(ctx context.Context, deviceID string, sess *crypto.S
 	for {
 		var env crypto.Envelope
 		if err := readWSJSON(ctx, c, &env); err != nil {
+			a.log.Info("agent ws reader done", "device_id", deviceID, "err", err)
 			return
 		}
 		switch env.Type {
