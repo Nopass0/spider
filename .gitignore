@@ -1,0 +1,48 @@
+# ---- Secrets / local env (НИКОГДА не коммитить) ----
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+
+# ---- Go server ----
+server/bin/
+server/dist/
+server/spider
+server/spider.exe
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+/coverage.out
+
+# ---- Rust client ----
+client/target/
+target/
+**/*.rs.bk
+
+# ---- Node / panel ----
+panel/node_modules/
+panel/dist/
+panel/.vite/
+node_modules/
+**/node_modules/
+.npm/
+.eslintcache
+
+# ---- Editor / OS ----
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ---- Build artifacts ----
+deploy/pkg/
+*.tar.gz
+*.zip
