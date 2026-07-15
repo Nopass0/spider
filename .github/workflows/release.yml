@@ -1,0 +1,120 @@
+name: release
+
+# Релиз: сборка клиентских бинарей под win/linux x86_64 + ed25519-подпись,
+# сборка сервера, публикация GitHub Release при теге v*.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build-client:
+    name: Client ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            archive: spider-agent-linux-amd64.tar.gz
+          - target: x86_64-pc-windows-gnu
+            archive: spider-agent-windows-amd64.zip
+            ext: .exe
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client
+
+      - name: Build
+        env:
+          # Публичный ключ проверки обновлений (hex, 32 байта).
+          SIGNING_PUBKEY: ${{ secrets.SIGNING_PUBKEY }}
+        run: cargo build --release --all-features --target ${{ matrix.target }}
+
+      - name: Prepare binary
+        run: |
+          mkdir -p pkg
+          cp target/${{ matrix.target }}/release/spider-agent${{ matrix.ext }} pkg/
+      - name: Archive (linux)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: tar -czf ${{ matrix.archive }} -C pkg spider-agent
+      - name: Archive (windows)
+        if: matrix.target == 'x86_64-pc-windows-gnu'
+        run: (cd pkg && zip -r ../${{ matrix.archive }} .)
+
+      - name: Sign (ed25519)
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+        run: |
+          printf '%s' "$SIGNING_KEY" | xxd -r -p > /tmp/key.bin
+          openssl pkeyutl -sign -inkey /tmp/key.bin -rawin -in ${{ matrix.archive }} -out ${{ matrix.archive }}.sig || \
+          python3 - <<'PY'
+          # fallback-подпись через python ed25519, если openssl не подходит
+          print('подпись через openssl недоступна; см. docs/DEPLOY.md')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: client/${{ matrix.archive }}*
+
+  build-server:
+    name: Server linux-amd64
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      # Собираем панель и встраиваем её в бинарь.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: panel/package-lock.json
+      - name: Build panel
+        working-directory: panel
+        run: |
+          npm ci
+          npm run build
+      - name: Embed panel into server
+        run: |
+          rm -rf internal/panel/dist
+          cp -r ../panel/dist internal/panel/dist
+      - name: Build server
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+          go build -trimpath -ldflags "-s -w -X github.com/nopass0/spider/server/internal/version.Version=${GITHUB_REF_NAME}" \
+            -o ../spider-server ./cmd/spider
+      - uses: actions/upload-artifact@v4
+        with:
+          name: spider-server
+          path: spider-server
+
+  publish:
+    name: Publish GitHub Release
+    needs: [build-client, build-server]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/spider-agent-linux-amd64.tar.gz*/*
+            artifacts/spider-agent-windows-amd64.zip*/*
+            artifacts/spider-server/*

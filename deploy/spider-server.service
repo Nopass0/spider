@@ -1,0 +1,33 @@
+[Unit]
+Description=Spider Server — remote console control plane
+Documentation=https://github.com/Nopass0/spider
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Конфигурация через environment-файл (см. /etc/spider/server.env).
+EnvironmentFile=/etc/spider/server.env
+# Бинарь устанавливается install.sh.
+ExecStart=/usr/local/bin/spider-server
+WorkingDirectory=/var/lib/spider
+
+# Жёсткий systemd-сэндбокс (видимый, управляемый сервис).
+Restart=on-failure
+RestartSec=5
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+# Защита файловой системы: доступ только к своим каталогам.
+ReadWritePaths=/var/lib/spider /var/log/spider
+ProtectSystem=strict
+ProtectHome=true
+NoNewPrivileges=true
+PrivateTmp=true
+
+# Ресурсы.
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

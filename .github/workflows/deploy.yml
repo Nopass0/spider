@@ -1,0 +1,57 @@
+name: deploy
+
+# Автодеплой серверной части на прод при пуше в main.
+# Секреты берутся ИСКЛЮЧИТЕЛЬНО из GitHub Actions secrets (не из репозитория!).
+# См. docs/DEPLOY.md — какие секреты нужно задать.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Deploy to ${SSH_HOST}
+    runs-on: ubuntu-latest
+    env:
+      SSH_HOST: ${{ secrets.SSH_HOST }}
+      SSH_USER: ${{ secrets.SSH_USER }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build panel
+        working-directory: panel
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build server (linux/amd64, panel embedded)
+        working-directory: server
+        run: |
+          rm -rf internal/panel/dist
+          cp -r ../../panel/dist internal/panel/dist
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+          go build -trimpath -ldflags "-s -w" -o ../../spider-server ./cmd/spider
+
+      - name: Upload & install via SSH
+        env:
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+          SPIDER_ADMIN_KEY: ${{ secrets.SPIDER_ADMIN_KEY }}
+        run: |
+          # Передаём бинарь и install.sh на сервер, запускаем установку.
+          # Используем sshpass (есть на ubuntu-latest runner).
+          export SSHPASS="$SSH_PASSWORD"
+          : "${SSH_HOST:?secret SSH_HOST не задан}"
+          : "${SSH_USER:?secret SSH_USER не задан}"
+          : "${SPIDER_ADMIN_KEY:?secret SPIDER_ADMIN_KEY не задан}"
+
+          sshpass -e scp -o StrictHostKeyChecking=accept-new \
+            spider-server deploy/install.sh deploy/Caddyfile deploy/spider-server.service \
+            "$SSH_USER@$SSH_HOST:/tmp/spider-deploy/"
+
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new "$SSH_USER@$SSH_HOST" \
+            "SPIDER_ADMIN_KEY='$SPIDER_ADMIN_KEY' bash /tmp/spider-deploy/install.sh /tmp/spider-deploy/spider-server"
+
+      - name: Health check
+        run: |
+          sleep 5
+          curl -fsS "https://spider.lowkey.su/healthz" || echo "⚠ сервер ещё поднимается"

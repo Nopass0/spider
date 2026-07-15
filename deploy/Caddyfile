@@ -1,0 +1,43 @@
+# Caddyfile для Spider.
+# Caddy автоматически выпускает TLS-сертификат через Let's Encrypt (HTTP-01)
+# для spider.lowkey.su и проксирует на Go-сервер :8080.
+#
+# Для wildcard (*.spider.lowkey.su) см. docs/DEPLOY.md — нужен DNS-01 challenge.
+
+{
+	# email для уведомлений Let's Encrypt (опционально)
+	# email admin@lowkey.su
+}
+
+spider.lowkey.su {
+	encode zstd gzip
+
+	# WebSocket и long-poll нуждаются в длинных таймаутах.
+	reverse_proxy 127.0.0.1:8080 {
+		# Время ожидания между пакетами; long-poll держит соединение до 120с.
+		flush_interval -1
+		transport http {
+			read_timeout 120s
+			write_timeout 120s
+			dial_timeout 10s
+		}
+	}
+
+	# Безопасные заголовки.
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		# CSP: только свои источники (панель встроена).
+		Content-Security-Policy "default-src 'self'; connect-src 'self' wss: ws:; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'"
+	}
+
+	# Логи доступа.
+	log {
+		output file /var/log/spider/caddy-access.log {
+			roll_size 50mb
+			roll_keep 5
+		}
+	}
+}
