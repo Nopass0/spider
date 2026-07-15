@@ -1,0 +1,28 @@
+name: logs
+
+# Собирает логи spider-server с прод-сервера (для диагностики WS).
+# Запускать вручную после попытки подключения агента.
+on:
+  workflow_dispatch:
+
+jobs:
+  logs:
+    runs-on: ubuntu-latest
+    env:
+      SSH_HOST: ${{ secrets.SSH_HOST }}
+      SSH_USER: ${{ secrets.SSH_USER }}
+    steps:
+      - name: Install sshpass
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
+      - name: Логи spider-server
+        env:
+          SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+        run: |
+          export SSHPASS="$SSH_PASSWORD"
+          echo "########## последние 80 строк spider-server ##########"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new "$SSH_USER@$SSH_HOST" \
+            'journalctl -u spider-server -n 80 --no-pager'
+          echo
+          echo "########## последние 40 строк caddy ##########"
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new "$SSH_USER@$SSH_HOST" \
+            'journalctl -u caddy -n 40 --no-pager'
