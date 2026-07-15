@@ -8,6 +8,10 @@ import {
   CommandStatusSchema,
   CreatedEnrollmentSchema,
   EnqueueCommandSchema,
+  DeviceListSchema,
+  EnrollmentListSchema,
+  CommandListSchema,
+  AuditListSchema,
 } from '@/schemas';
 
 describe('DeviceSchema', () => {
@@ -85,5 +89,39 @@ describe('CreatedEnrollmentSchema', () => {
       expires_at: '2024-01-01',
     });
     expect(r.token).toBe('tok');
+  });
+});
+
+describe('List-схемы: null → [] (пустой список из Go)', () => {
+  it('DeviceListSchema: devices=null → пустой массив', () => {
+    expect(DeviceListSchema.parse({ devices: null }).devices).toEqual([]);
+    expect(DeviceListSchema.parse({ devices: undefined }).devices).toEqual([]);
+    expect(DeviceListSchema.parse({ devices: [] }).devices).toEqual([]);
+  });
+
+  it('EnrollmentListSchema: enrollments=null → пустой массив', () => {
+    expect(EnrollmentListSchema.parse({ enrollments: null }).enrollments).toEqual([]);
+  });
+
+  it('CommandListSchema: commands=null → пустой массив', () => {
+    expect(CommandListSchema.parse({ commands: null }).commands).toEqual([]);
+  });
+
+  it('AuditListSchema: audit=null → пустой массив', () => {
+    expect(AuditListSchema.parse({ audit: null }).audit).toEqual([]);
+  });
+
+  it('парсит реальные массивы', () => {
+    const d = DeviceListSchema.parse({
+      devices: [
+        {
+          device_id: 'd1',
+          first_seen: '2024-01-01T00:00:00Z',
+          last_seen: '2024-01-02T00:00:00Z',
+          online: true,
+        },
+      ],
+    });
+    expect(d.devices).toHaveLength(1);
   });
 });

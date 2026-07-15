@@ -48,7 +48,7 @@ func (s *Store) DequeueCommands(ctx context.Context, deviceID string, limit int)
 	if err != nil {
 		return nil, fmt.Errorf("store: dequeue select: %w", err)
 	}
-	var out []Command
+	out := make([]Command, 0)
 	for rows.Next() {
 		var c Command
 		var created int64
@@ -165,7 +165,7 @@ func (s *Store) ListDeviceCommands(ctx context.Context, deviceID string, limit i
 		return nil, fmt.Errorf("store: list commands: %w", err)
 	}
 	defer rows.Close()
-	var out []Command
+	out := make([]Command, 0)
 	for rows.Next() {
 		var c Command
 		var created int64

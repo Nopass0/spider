@@ -28,7 +28,7 @@ func (s *Store) ListAudit(ctx context.Context, limit int) ([]AuditEntry, error) 
 		return nil, fmt.Errorf("store: list audit: %w", err)
 	}
 	defer rows.Close()
-	var out []AuditEntry
+	out := make([]AuditEntry, 0)
 	for rows.Next() {
 		var e AuditEntry
 		if err := rows.Scan(&e.ID, &e.Actor, &e.Action, &e.Target, &e.Detail, &e.At); err != nil {

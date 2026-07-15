@@ -106,7 +106,7 @@ func (s *Store) ListDevices(ctx context.Context) ([]Device, error) {
 		return nil, fmt.Errorf("store: list devices: %w", err)
 	}
 	defer rows.Close()
-	var out []Device
+	out := make([]Device, 0)
 	for rows.Next() {
 		var d Device
 		var first, last int64

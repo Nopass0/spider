@@ -92,13 +92,19 @@ export const AuditEntrySchema = z.object({
 });
 export type AuditEntry = z.infer<typeof AuditEntrySchema>;
 
-/** Обёртки-ответы list-эндпоинтов. */
-export const DeviceListSchema = z.object({ devices: z.array(DeviceSchema) });
+/**
+ * Обёртки-ответы list-эндпоинтов. Поля nullable: если сервер вернёт null
+ * вместо массива (пустой список в Go без make([])), приводим к [].
+ */
+const arrayOrEmpty = <T extends z.ZodTypeAny>(el: T) =>
+  z.union([z.array(el), z.null(), z.undefined()]).transform((v) => v ?? []);
+
+export const DeviceListSchema = z.object({ devices: arrayOrEmpty(DeviceSchema) });
 export const EnrollmentListSchema = z.object({
-  enrollments: z.array(EnrollmentSchema),
+  enrollments: arrayOrEmpty(EnrollmentSchema),
 });
-export const CommandListSchema = z.object({ commands: z.array(CommandSchema) });
-export const AuditListSchema = z.object({ audit: z.array(AuditEntrySchema) });
+export const CommandListSchema = z.object({ commands: arrayOrEmpty(CommandSchema) });
+export const AuditListSchema = z.object({ audit: arrayOrEmpty(AuditEntrySchema) });
 
 /** Входные схемы для запросов. */
 export const EnqueueCommandSchema = z.object({

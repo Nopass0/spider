@@ -70,7 +70,7 @@ func (s *Store) ListEnrollments(ctx context.Context) ([]Enrollment, error) {
 		return nil, fmt.Errorf("store: list enrollments: %w", err)
 	}
 	defer rows.Close()
-	var out []Enrollment
+	out := make([]Enrollment, 0)
 	for rows.Next() {
 		var e Enrollment
 		var created, expires int64
