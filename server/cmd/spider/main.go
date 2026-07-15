@@ -9,9 +9,12 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -116,6 +119,9 @@ func withLogging(log *slog.Logger) func(http.Handler) http.Handler {
 }
 
 // statusRecorder перехватывает статус-код для логирования.
+// ВАЖНО: реализует http.Hijacker и http.Flusher, делегируя в underlying writer —
+// иначе WebSocket (nhooyr.io) получит 501 Not Implemented, т.к. не сможет
+// "угнать" TCP-соединение через обёртку.
 type statusRecorder struct {
 	http.ResponseWriter
 	status int
@@ -124,4 +130,26 @@ type statusRecorder struct {
 func (r *statusRecorder) WriteHeader(code int) {
 	r.status = code
 	r.ResponseWriter.WriteHeader(code)
+}
+
+// Unwrap возвращает underlying ResponseWriter — позволяет библиотекам
+// (включая nhooyr.io) добраться до оригинального writer с Hijacker.
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
+// Hijack делегирует в underlying writer, если он реализует http.Hijacker.
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hj, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("statusRecorder: underlying ResponseWriter does not implement http.Hijacker")
+	}
+	return hj.Hijack()
+}
+
+// Flush делегирует в underlying writer, если он реализует http.Flusher.
+func (r *statusRecorder) Flush() {
+	if fl, ok := r.ResponseWriter.(http.Flusher); ok {
+		fl.Flush()
+	}
 }
