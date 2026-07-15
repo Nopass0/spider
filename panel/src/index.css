@@ -1,0 +1,72 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+   Тёмная тема панели Spider. Токены в HSL для tailwind-конфига.
+   ============================================================ */
+@layer base {
+  :root,
+  .dark {
+    --background: 222 22% 8%;        /* #0e1117-ish */
+    --foreground: 213 27% 84%;
+    --card: 222 20% 11%;
+    --card-foreground: 213 27% 84%;
+    --muted: 220 14% 18%;
+    --muted-foreground: 217 11% 55%;
+    --border: 220 14% 20%;
+    --input: 220 14% 18%;
+    --primary: 199 89% 56%;          /* cyan/sky */
+    --primary-foreground: 222 47% 11%;
+    --accent: 280 70% 60%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 72% 51%;
+    --success: 142 71% 45%;
+    --warning: 38 92% 50%;
+  }
+
+  * {
+    border-color: hsl(var(--border));
+  }
+  body {
+    background-color: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--border));
+    border-radius: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl border bg-card text-card-foreground shadow-lg;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:pointer-events-none disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply btn bg-primary text-primary-foreground hover:opacity-90;
+  }
+  .btn-secondary {
+    @apply btn border bg-transparent hover:bg-muted;
+  }
+  .btn-danger {
+    @apply btn bg-destructive text-white hover:opacity-90;
+  }
+  .input {
+    @apply w-full rounded-lg border bg-input px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary;
+  }
+  .badge {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium;
+  }
+}
