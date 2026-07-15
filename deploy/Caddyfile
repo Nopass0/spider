@@ -14,15 +14,12 @@
 spider.lowkey.su {
 	encode zstd gzip
 
-	# WebSocket и long-poll нуждаются в длинных таймаутах.
+	# WebSocket и long-poll: проксируем на Go-сервер.
+	# Важно: БЕЗ явного `transport http` — иначе Caddy не передаёт
+	# WS-upgrade заголовки (Connection: Upgrade) на бэкенд, и соединение
+	# падает с 501 Not Implemented. Дефолтный транспорт сам поддерживает upgrade.
 	reverse_proxy 127.0.0.1:8080 {
-		# Время ожидания между пакетами; long-poll держит соединение до 120с.
 		flush_interval -1
-		transport http {
-			read_timeout 120s
-			write_timeout 120s
-			dial_timeout 10s
-		}
 	}
 
 	# Безопасные заголовки.
