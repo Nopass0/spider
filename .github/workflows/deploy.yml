@@ -28,9 +28,12 @@ jobs:
         working-directory: server
         run: |
           rm -rf internal/panel/dist
-          cp -r ../../panel/dist internal/panel/dist
+          cp -r ../panel/dist internal/panel/dist
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
-          go build -trimpath -ldflags "-s -w" -o ../../spider-server ./cmd/spider
+          go build -trimpath -ldflags "-s -w" -o ../spider-server ./cmd/spider
+
+      - name: Install sshpass
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq sshpass
 
       - name: Upload & install via SSH
         env:
@@ -38,11 +41,13 @@ jobs:
           SPIDER_ADMIN_KEY: ${{ secrets.SPIDER_ADMIN_KEY }}
         run: |
           # Передаём бинарь и install.sh на сервер, запускаем установку.
-          # Используем sshpass (есть на ubuntu-latest runner).
           export SSHPASS="$SSH_PASSWORD"
           : "${SSH_HOST:?secret SSH_HOST не задан}"
           : "${SSH_USER:?secret SSH_USER не задан}"
           : "${SPIDER_ADMIN_KEY:?secret SPIDER_ADMIN_KEY не задан}"
+
+          sshpass -e ssh -o StrictHostKeyChecking=accept-new "$SSH_USER@$SSH_HOST" \
+            "mkdir -p /tmp/spider-deploy"
 
           sshpass -e scp -o StrictHostKeyChecking=accept-new \
             spider-server deploy/install.sh deploy/Caddyfile deploy/spider-server.service \
@@ -53,5 +58,13 @@ jobs:
 
       - name: Health check
         run: |
-          sleep 5
-          curl -fsS "https://spider.lowkey.su/healthz" || echo "⚠ сервер ещё поднимается"
+          # Ретраи: Caddy только что выпускает сертификат, нужно время.
+          ok=0
+          for i in $(seq 1 12); do
+            echo "попытка $i/12…"
+            if curl -fsS "https://spider.lowkey.su/healthz"; then ok=1; break; fi
+            sleep 10
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "⚠ сервер не ответил на healthz за ~2мин — возможно, Caddy ещё выпускает TLS-сертификат."
+          fi
