@@ -30,16 +30,21 @@ pub const FIRST_RUN_WARNING: &str = "\
 
 /// Зарегистрировать агента на сервере.
 ///
-/// Возвращает готовое состояние для сохранения.
+/// Генерирует эфемерную пару X25519 агента и отправляет публичный ключ вместе
+/// с токеном и сист.инфо. Возвращает готовое состояние для сохранения.
 pub async fn enroll(
     server: &str,
     token: &str,
     system: &SystemInfo,
 ) -> Result<EnrollResponse> {
+    // Эфемерная пара X25519 агента — публичную часть отдаём серверу.
+    let (_secret, public) = crate::crypto::generate_keypair();
+    let public_key = crate::crypto::b64_encode(public.as_bytes());
+
     let url = format!("{}/agent/enroll", server.trim_end_matches('/'));
     let req = EnrollRequest {
         token: token.to_string(),
-        public_key: String::new(), // публичный ключ агента (опционально для текущей схемы)
+        public_key,
         system: system.clone(),
         agent_version: system.agent_version.clone(),
     };
