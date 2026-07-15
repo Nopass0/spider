@@ -53,8 +53,8 @@ func (c Config) validate() error {
 	if c.AdminKey == "" {
 		return fmt.Errorf("config: SPIDER_ADMIN_KEY обязательный (см. .env.example)")
 	}
-	if len(c.AdminKey) < 16 {
-		return fmt.Errorf("config: SPIDER_ADMIN_KEY слишком короткий (минимум 16 символов)")
+	if len(c.AdminKey) < 8 {
+		return fmt.Errorf("config: SPIDER_ADMIN_KEY слишком короткий (минимум 8 символов)")
 	}
 	if c.HTTPAddr == "" {
 		return fmt.Errorf("config: SPIDER_HTTP_ADDR пуст")

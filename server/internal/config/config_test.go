@@ -42,6 +42,19 @@ func TestLoadShortAdminKey(t *testing.T) {
 	}
 }
 
+func TestLoadEightCharAdminKey(t *testing.T) {
+	t.Setenv("SPIDER_ADMIN_KEY", "12345678")
+	for _, k := range []string{
+		"SPIDER_HTTP_ADDR", "SPIDER_PUBLIC_URL", "SPIDER_DB_PATH",
+		"SPIDER_LONGPOLL_TIMEOUT", "SPIDER_ENROLL_TTL_HOURS", "SPIDER_LOG_LEVEL",
+	} {
+		t.Setenv(k, "")
+	}
+	if _, err := Load(); err != nil {
+		t.Fatalf("8-символьный ключ должен проходить валидацию: %v", err)
+	}
+}
+
 func TestLoadBadLogLevel(t *testing.T) {
 	t.Setenv("SPIDER_ADMIN_KEY", "supersecret-admin-key-12345")
 	t.Setenv("SPIDER_LOG_LEVEL", "trace")

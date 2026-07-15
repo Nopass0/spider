@@ -15,8 +15,8 @@ export function LoginPage() {
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (key.trim().length < 16) {
-      setError('Ключ слишком короткий (минимум 16 символов)');
+    if (key.trim().length < 8) {
+      setError('Ключ слишком короткий (минимум 8 символов)');
       return;
     }
     setError(null);
