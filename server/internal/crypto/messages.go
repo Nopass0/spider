@@ -22,4 +22,32 @@ const (
 	// MsgPing / MsgPong — транспортные keepalive.
 	MsgPing = "ping"
 	MsgPong = "pong"
+
+	// --- Streaming-терминал (PTY) ---
+	// MsgTerminalOpen — admin → agent: создать PTY-сессию.
+	MsgTerminalOpen = "terminal.open"
+	// MsgTerminalInput — admin → agent: байты ввода в PTY.
+	MsgTerminalInput = "terminal.input"
+	// MsgTerminalResize — admin → agent: изменить размер PTY.
+	MsgTerminalResize = "terminal.resize"
+	// MsgTerminalClose — admin → agent: закрыть PTY.
+	MsgTerminalClose = "terminal.close"
+	// MsgTerminalOutput — agent → admin: поток вывода PTY.
+	MsgTerminalOutput = "terminal.output"
+	// MsgTerminalExit — agent → admin: PTY завершён с exit-кодом.
+	MsgTerminalExit = "terminal.exit"
+
+	// --- Трансляция экрана (MJPEG) ---
+	// MsgScreenStart — admin → agent: начать захват кадров.
+	MsgScreenStart = "screen.start"
+	// MsgScreenStop — admin → agent: остановить захват.
+	MsgScreenStop = "screen.stop"
+	// MsgScreenFrame — agent → admin: JPEG-кадр потока.
+	MsgScreenFrame = "screen.frame"
+
+	// --- Одиночные скриншоты ---
+	// MsgScreenshotSnap — admin → agent: сделать один кадр.
+	MsgScreenshotSnap = "screenshot.snap"
+	// MsgScreenshotDone — agent → admin: кадр готов (сохраняется на сервере).
+	MsgScreenshotDone = "screenshot.done"
 )

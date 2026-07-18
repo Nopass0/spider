@@ -54,6 +54,82 @@ type WireServerInfo struct {
 	CommandsEnabled bool `json:"commands_enabled"`
 }
 
+// --- Streaming-терминал (PTY) ---
+
+// WireTerminalOpen — создать PTY-сессию (admin → agent).
+type WireTerminalOpen struct {
+	SessionID string `json:"session_id"`
+	Cols      int    `json:"cols"`
+	Rows      int    `json:"rows"`
+}
+
+// WireTerminalInput — байты ввода в PTY (admin → agent).
+type WireTerminalInput struct {
+	SessionID string `json:"session_id"`
+	DataB64   string `json:"data_b64"`
+}
+
+// WireTerminalResize — изменить размер PTY (admin → agent).
+type WireTerminalResize struct {
+	SessionID string `json:"session_id"`
+	Cols      int    `json:"cols"`
+	Rows      int    `json:"rows"`
+}
+
+// WireTerminalClose — закрыть PTY (admin → agent).
+type WireTerminalClose struct {
+	SessionID string `json:"session_id"`
+}
+
+// WireTerminalOutput — поток вывода PTY (agent → admin).
+type WireTerminalOutput struct {
+	SessionID string `json:"session_id"`
+	DataB64   string `json:"data_b64"`
+}
+
+// WireTerminalExit — PTY завершён (agent → admin).
+type WireTerminalExit struct {
+	SessionID string `json:"session_id"`
+	ExitCode  int    `json:"exit_code"`
+}
+
+// --- Трансляция экрана (MJPEG) ---
+
+// WireScreenStart — начать захват (admin → agent).
+type WireScreenStart struct {
+	SessionID string `json:"session_id"`
+	FPS       int    `json:"fps"`
+	Quality   int    `json:"quality"`
+}
+
+// WireScreenStop — остановить захват (admin → agent).
+type WireScreenStop struct {
+	SessionID string `json:"session_id"`
+}
+
+// WireScreenFrame — JPEG-кадр (agent → admin).
+type WireScreenFrame struct {
+	SessionID string `json:"session_id"`
+	FrameB64  string `json:"frame_b64"`
+	W         int    `json:"w"`
+	H         int    `json:"h"`
+}
+
+// --- Скриншоты ---
+
+// WireScreenshotSnap — сделать одиночный кадр (admin → agent).
+type WireScreenshotSnap struct {
+	SessionID string `json:"session_id"`
+}
+
+// WireScreenshotDone — кадр готов (agent → admin).
+type WireScreenshotDone struct {
+	SessionID string `json:"session_id"`
+	FrameB64  string `json:"frame_b64"`
+	W         int    `json:"w"`
+	H         int    `json:"h"`
+}
+
 // Dispatcher координирует отправку команд и приём результатов.
 type Dispatcher struct {
 	store *store.Store
@@ -139,6 +215,32 @@ func (d *Dispatcher) SessionFor(ctx context.Context, deviceID string) (*crypto.S
 		return nil, fmt.Errorf("commands: decode session key: %w", err)
 	}
 	return crypto.NewSession(key)
+}
+
+// SealFor шифрует произвольный payload под ключ сессии устройства и возвращает
+// готовый envelope. Используется для streaming-сообщений (terminal/screen) —
+// без записи в БД, в отличие от Dispatch. Публичный, чтобы api-слой мог звать.
+func (d *Dispatcher) SealFor(ctx context.Context, deviceID, msgType string, payload any) (crypto.Envelope, error) {
+	sess, err := d.SessionFor(ctx, deviceID)
+	if err != nil {
+		return crypto.Envelope{}, err
+	}
+	return crypto.SealEnvelope(sess, msgType, payload)
+}
+
+// SealForRaw шифрует уже готовые байты payload (например, сырой JSON от панели)
+// под ключ устройства. Тип сообщения выносится в envelope.type, а payload
+// отправляется как есть — агент дешифрует и сам парсит по типу.
+func (d *Dispatcher) SealForRaw(ctx context.Context, deviceID, msgType string, rawPayload []byte) (crypto.Envelope, error) {
+	sess, err := d.SessionFor(ctx, deviceID)
+	if err != nil {
+		return crypto.Envelope{}, err
+	}
+	ct, err := sess.Encrypt(rawPayload)
+	if err != nil {
+		return crypto.Envelope{}, err
+	}
+	return crypto.Envelope{Type: msgType, Data: base64.StdEncoding.EncodeToString(ct)}, nil
 }
 
 // HandleResult обрабатывает результат, пришедший от агента (WS или long-poll).

@@ -174,6 +174,17 @@ func OpenEnvelope[T any](s *Session, env Envelope, target *T) error {
 	return nil
 }
 
+// DecryptEnvelope расшифровывает payload из Envelope и возвращает сырые байты
+// без десериализации. Удобно для ретрансляции streaming-сообщений (серверу не
+// нужно знать детали wire-структур терминала/экрана).
+func (s *Session) DecryptEnvelope(env Envelope) ([]byte, error) {
+	ct, err := base64.StdEncoding.DecodeString(env.Data)
+	if err != nil {
+		return nil, fmt.Errorf("crypto: b64 decode: %w", err)
+	}
+	return s.Decrypt(ct)
+}
+
 // ===========================================================================
 // Служебное
 // ===========================================================================

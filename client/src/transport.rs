@@ -2,8 +2,8 @@
 //!
 //! Дизайн: ключ сессии хранится в [`SharedKey`] (Arc<[u8;32]>), и каждая задача
 //! создаёт короткоживущую [`Session`] по необходимости — это обходит то, что
-//! Aes256Gcm не реализует Clone. Канал результатов (`Envelope`) используется для
-//! доставки outcome-ов обратно в писатель транспортного соединения.
+//! Aes256Gcm не реализует Clone. Канал [`Outbound`] доставляет все исходящие
+//! сообщения (команды, PTY-вывод, кадры экрана) в писатель транспорта.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -16,7 +16,13 @@ use tracing::{info, warn};
 
 use crate::crypto::{Envelope, Session, KEY_SIZE};
 use crate::executor;
-use crate::proto::{self, ServerInfo, WireCommand, WireResult};
+use crate::proto::{
+    self, ServerInfo, WireCommand, WireResult, WireScreenFrame, WireScreenshotDone,
+    WireTerminalExit, WireTerminalOutput,
+};
+use crate::pty::PtyManager;
+#[cfg(feature = "screen")]
+use crate::screen::ScreenManager;
 
 /// Разделяемый ключ сессии — из него задачи создают Session по мере надобности.
 #[derive(Clone)]
@@ -39,14 +45,41 @@ pub enum AgentEvent {
     CommandDone { id: String, exit_code: i32 },
     ServerInfo(ServerInfo),
     TransportSwitched(&'static str),
+    TerminalOpened { session_id: String },
+    TerminalClosed { session_id: String, exit_code: i32 },
+    #[cfg(feature = "screen")]
+    ScreenStarted { session_id: String, fps: u32 },
+    #[cfg(feature = "screen")]
+    ScreenStopped { session_id: String },
 }
 
-/// Превратить WireResult в событие для логирования.
-fn result_to_event(res: &WireResult) -> Result<AgentEvent> {
-    Ok(AgentEvent::CommandDone {
-        id: res.command_id.clone(),
-        exit_code: res.exit_code,
-    })
+/// Все исходящие сообщения агента → сервер. Канал этого типа доставляет
+/// результаты команд, PTY-вывод, кадры экрана и скриншоты в писатель транспорта.
+#[derive(Debug, Clone)]
+pub enum Outbound {
+    /// Финальный результат команды (WS шифрует, long-poll шлёт как WireResult).
+    CommandResult(WireResult),
+    /// Чанк вывода PTY (шифруется в Envelope).
+    TerminalOutput(WireTerminalOutput),
+    /// PTY завершён.
+    TerminalExit(WireTerminalExit),
+    /// JPEG-кадр экрана.
+    ScreenFrame(WireScreenFrame),
+    /// Скриншот готов.
+    ScreenshotDone(WireScreenshotDone),
+}
+
+impl Outbound {
+    /// Тип wire-сообщения (для envelope).
+    fn msg_type(&self) -> &'static str {
+        match self {
+            Outbound::CommandResult(_) => proto::msg::COMMAND_RESULT,
+            Outbound::TerminalOutput(_) => proto::msg::TERMINAL_OUTPUT,
+            Outbound::TerminalExit(_) => proto::msg::TERMINAL_EXIT,
+            Outbound::ScreenFrame(_) => proto::msg::SCREEN_FRAME,
+            Outbound::ScreenshotDone(_) => proto::msg::SCREENSHOT_DONE,
+        }
+    }
 }
 
 /// Главный цикл агента. Блокирует до критической ошибки.
@@ -56,19 +89,26 @@ pub async fn run(
     key: SharedKey,
     event_tx: mpsc::UnboundedSender<AgentEvent>,
 ) -> Result<()> {
-    // Канал результатов: в WS режиме оборачиваются в Envelope, в long-poll
-    // отправляются как есть (сервер ожидает WireResult).
-    let (result_tx, mut result_rx) = mpsc::unbounded_channel::<WireResult>();
+    // Канал всех исходящих сообщений (команды, PTY, экран).
+    let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel::<Outbound>();
+    let pty_mgr = Arc::new(PtyManager::new());
+    #[cfg(feature = "screen")]
+    let screen_mgr = Arc::new(ScreenManager::new());
 
     loop {
-        match ws_run(server, device_id, &key, &event_tx, &result_tx, &mut result_rx).await {
+        match ws_run(server, device_id, &key, &event_tx, &outbound_tx, &mut outbound_rx, &pty_mgr,
+            #[cfg(feature = "screen")]
+            &screen_mgr,
+        ).await {
             Ok(()) => return Ok(()),
             Err(e) => {
                 warn!("WebSocket упал: {e}; переключаемся на long-poll");
                 let _ = event_tx.send(AgentEvent::TransportSwitched("long-poll"));
-                if let Err(e) =
-                    longpoll_run(server, device_id, &key, &event_tx, &result_tx, &mut result_rx).await
-                {
+                if let Err(e) = longpoll_run(server, device_id, &key, &event_tx, &outbound_tx,
+                    &mut outbound_rx, &pty_mgr,
+                    #[cfg(feature = "screen")]
+                    &screen_mgr,
+                ).await {
                     warn!("long-poll ошибка: {e}; переподключение через 5с");
                     tokio::time::sleep(Duration::from_secs(5)).await;
                 }
@@ -79,7 +119,7 @@ pub async fn run(
 
 /// Обработать одну команду: выполнить и вернуть результат (без шифрования —
 /// шифрует WS-транспорт; long-poll отправляет как есть).
-pub async fn handle_command(key: &SharedKey, env: &Envelope) -> Option<WireResult> {
+pub async fn handle_command(key: &SharedKey, env: &Envelope) -> Option<Outbound> {
     if env.ty != proto::msg::COMMAND {
         return None;
     }
@@ -101,17 +141,119 @@ pub async fn handle_command(key: &SharedKey, env: &Envelope) -> Option<WireResul
     let outcome = match executor::execute(&cmd.command, cmd.timeout_sec).await {
         Ok(o) => o,
         Err(e) => {
-            return Some(WireResult {
+            return Some(Outbound::CommandResult(WireResult {
                 command_id: cmd.id.clone(),
                 exit_code: -1,
                 stdout_b64: String::new(),
                 stderr_b64: String::new(),
                 duration_ms: 0,
                 error: format!("executor error: {e}"),
-            });
+            }));
         }
     };
-    Some(outcome.to_wire(&cmd.id))
+    Some(Outbound::CommandResult(outcome.to_wire(&cmd.id)))
+}
+
+/// Обработать streaming-сообщение (terminal/screen/screenshot) — расшифровать
+/// payload и передать в нужный менеджер.
+async fn handle_stream_msg(
+    key: &SharedKey,
+    raw_env: &Envelope,
+    event_tx: &mpsc::UnboundedSender<AgentEvent>,
+    outbound_tx: &mpsc::UnboundedSender<Outbound>,
+    pty_mgr: &Arc<PtyManager>,
+    #[cfg(feature = "screen")] screen_mgr: &Arc<ScreenManager>,
+) {
+    let session = match key.session() {
+        Ok(s) => s,
+        Err(e) => {
+            warn!("session create (stream): {e}");
+            return;
+        }
+    };
+    let ty = raw_env.ty.as_str();
+    match ty {
+        proto::msg::TERMINAL_OPEN => {
+            if let Ok(req) = raw_env.open::<proto::WireTerminalOpen>(&session) {
+                let _ = event_tx.send(AgentEvent::TerminalOpened { session_id: req.session_id.clone() });
+                let tx = outbound_tx.clone();
+                let sid = req.session_id.clone();
+                let mgr = pty_mgr.clone();
+                // запускаем PTY; вывод стримится в outbound_tx.
+                if let Err(e) = mgr.open(&req.session_id, req.cols, req.rows, move |chunk| {
+                    let _ = tx.send(Outbound::TerminalOutput(WireTerminalOutput {
+                        session_id: sid.clone(),
+                        data_b64: chunk,
+                    }));
+                }).await {
+                    warn!("pty open: {e}");
+                }
+            }
+        }
+        proto::msg::TERMINAL_INPUT => {
+            if let Ok(req) = raw_env.open::<proto::WireTerminalInput>(&session) {
+                if let Ok(bytes) = crate::crypto::b64_decode(&req.data_b64) {
+                    if let Err(e) = pty_mgr.write(&req.session_id, &bytes).await {
+                        warn!("pty write: {e}");
+                    }
+                }
+            }
+        }
+        proto::msg::TERMINAL_RESIZE => {
+            if let Ok(req) = raw_env.open::<proto::WireTerminalResize>(&session) {
+                if let Err(e) = pty_mgr.resize(&req.session_id, req.cols, req.rows).await {
+                    warn!("pty resize: {e}");
+                }
+            }
+        }
+        proto::msg::TERMINAL_CLOSE => {
+            if let Ok(req) = raw_env.open::<proto::WireTerminalClose>(&session) {
+                let _ = pty_mgr.close(&req.session_id).await;
+                let _ = event_tx.send(AgentEvent::TerminalClosed { session_id: req.session_id, exit_code: 0 });
+            }
+        }
+        #[cfg(feature = "screen")]
+        proto::msg::SCREEN_START => {
+            if let Ok(req) = raw_env.open::<proto::WireScreenStart>(&session) {
+                let _ = event_tx.send(AgentEvent::ScreenStarted { session_id: req.session_id.clone(), fps: req.fps });
+                let tx = outbound_tx.clone();
+                let sid = req.session_id.clone();
+                let mgr = screen_mgr.clone();
+                if let Err(e) = mgr.start(&req.session_id, req.fps, req.quality.max(0) as u8, move |frame, w, h| {
+                    let _ = tx.send(Outbound::ScreenFrame(WireScreenFrame {
+                        session_id: sid.clone(), frame_b64: crate::crypto::b64_encode(&frame), w, h,
+                    }));
+                }).await {
+                    warn!("screen start: {e}");
+                }
+            }
+        }
+        #[cfg(feature = "screen")]
+        proto::msg::SCREEN_STOP => {
+            if let Ok(req) = raw_env.open::<proto::WireScreenStop>(&session) {
+                let _ = screen_mgr.stop(&req.session_id).await;
+                let _ = event_tx.send(AgentEvent::ScreenStopped { session_id: req.session_id });
+            }
+        }
+        #[cfg(feature = "screen")]
+        proto::msg::SCREENSHOT_SNAP => {
+            if let Ok(req) = raw_env.open::<proto::WireScreenshotSnap>(&session) {
+                let tx = outbound_tx.clone();
+                let sid = req.session_id.clone();
+                tokio::task::spawn_blocking(move || {
+                    match crate::screen::ScreenManager::snapshot() {
+                        Ok((frame, w, h)) => {
+                            let _ = tx.send(Outbound::ScreenshotDone(WireScreenshotDone {
+                                session_id: sid, frame_b64: crate::crypto::b64_encode(&frame), w, h,
+                            }));
+                        }
+                        Err(e) => warn!("screenshot: {e}"),
+                    }
+                });
+            }
+        }
+        _ => {}
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -123,8 +265,10 @@ async fn ws_run(
     device_id: &str,
     key: &SharedKey,
     event_tx: &mpsc::UnboundedSender<AgentEvent>,
-    result_tx: &mpsc::UnboundedSender<WireResult>,
-    result_rx: &mut mpsc::UnboundedReceiver<WireResult>,
+    outbound_tx: &mpsc::UnboundedSender<Outbound>,
+    outbound_rx: &mut mpsc::UnboundedReceiver<Outbound>,
+    pty_mgr: &Arc<PtyManager>,
+    #[cfg(feature = "screen")] screen_mgr: &Arc<ScreenManager>,
 ) -> Result<()> {
     let ws_url = ws_url(server, device_id);
     info!("подключение WS: {ws_url}");
@@ -143,7 +287,8 @@ async fn ws_run(
                 let msg = msg.context("ws read")?;
                 match msg {
                     Message::Text(text) => {
-                        match handle_text(key, &text, event_tx, result_tx).await {
+                        match handle_text(key, &text, event_tx, outbound_tx, pty_mgr,
+                            #[cfg(feature="screen")] screen_mgr).await {
                             Ok(Some(pong)) => {
                                 let txt = serde_json::to_string(&pong)?;
                                 let _ = ws.send(Message::Text(txt)).await;
@@ -154,7 +299,8 @@ async fn ws_run(
                     }
                     Message::Binary(b) => {
                         let text = String::from_utf8_lossy(&b).into_owned();
-                        match handle_text(key, &text, event_tx, result_tx).await {
+                        match handle_text(key, &text, event_tx, outbound_tx, pty_mgr,
+                            #[cfg(feature="screen")] screen_mgr).await {
                             Ok(Some(pong)) => {
                                 let txt = serde_json::to_string(&pong)?;
                                 let _ = ws.send(Message::Text(txt)).await;
@@ -177,20 +323,37 @@ async fn ws_run(
                     }
                 }
             }
-            Some(res) = result_rx.recv() => {
-                // Шифруем результат перед отправкой по WS.
+            Some(outbound) = outbound_rx.recv() => {
+                // Шифруем исходящее сообщение (command/terminal/screen) и отправляем.
                 if let Ok(session) = key.session() {
-                    if let Ok(env) = Envelope::seal(&session, proto::msg::COMMAND_RESULT, &res) {
+                    if let Ok(env) = seal_outbound(&session, &outbound) {
                         if let Ok(txt) = serde_json::to_string(&env) {
                             if ws.send(Message::Text(txt)).await.is_err() {
-                                return Err(anyhow::anyhow!("ws result send failed"));
+                                return Err(anyhow::anyhow!("ws outbound send failed"));
                             }
-                            if let Ok(ev) = result_to_event(&res) { let _ = event_tx.send(ev); }
                         }
+                    }
+                    // лог события для CommandResult
+                    if let Outbound::CommandResult(res) = &outbound {
+                        let _ = event_tx.send(AgentEvent::CommandDone {
+                            id: res.command_id.clone(),
+                            exit_code: res.exit_code,
+                        });
                     }
                 }
             }
         }
+    }
+}
+
+/// Запечатать Outbound в Envelope под сессией.
+fn seal_outbound(session: &Session, ob: &Outbound) -> Result<Envelope> {
+    match ob {
+        Outbound::CommandResult(r) => Envelope::seal(session, proto::msg::COMMAND_RESULT, r),
+        Outbound::TerminalOutput(o) => Envelope::seal(session, proto::msg::TERMINAL_OUTPUT, o),
+        Outbound::TerminalExit(e) => Envelope::seal(session, proto::msg::TERMINAL_EXIT, e),
+        Outbound::ScreenFrame(f) => Envelope::seal(session, proto::msg::SCREEN_FRAME, f),
+        Outbound::ScreenshotDone(d) => Envelope::seal(session, proto::msg::SCREENSHOT_DONE, d),
     }
 }
 
@@ -200,7 +363,9 @@ async fn handle_text(
     key: &SharedKey,
     text: &str,
     event_tx: &mpsc::UnboundedSender<AgentEvent>,
-    result_tx: &mpsc::UnboundedSender<WireResult>,
+    outbound_tx: &mpsc::UnboundedSender<Outbound>,
+    pty_mgr: &Arc<PtyManager>,
+    #[cfg(feature = "screen")] screen_mgr: &Arc<ScreenManager>,
 ) -> Result<Option<Envelope>> {
     let env: Envelope = serde_json::from_str(text).context("decode envelope")?;
     let session = key.session()?;
@@ -210,7 +375,7 @@ async fn handle_text(
                 let _ = event_tx.send(AgentEvent::CommandReceived(cmd.command.clone()));
                 let key = key.clone();
                 let env = env.clone();
-                let tx = result_tx.clone();
+                let tx = outbound_tx.clone();
                 tokio::spawn(async move {
                     if let Some(res) = handle_command(&key, &env).await {
                         let _ = tx.send(res);
@@ -228,6 +393,26 @@ async fn handle_text(
                 Envelope::seal(&session, proto::msg::PONG, &serde_json::json!({}))?,
             ));
         }
+        // streaming-сообщения (terminal/screen) — отдельный обработчик.
+        ty if ty.starts_with("terminal.")
+            || ty.starts_with("screen.")
+            || ty.starts_with("screenshot.") =>
+        {
+            let key = key.clone();
+            let env = env.clone();
+            let tx = outbound_tx.clone();
+            let evt = event_tx.clone();
+            let pty = pty_mgr.clone();
+            #[cfg(feature = "screen")]
+            let scr = screen_mgr.clone();
+            tokio::spawn(async move {
+                handle_stream_msg(
+                    &key, &env, &evt, &tx, &pty,
+                    #[cfg(feature = "screen")]
+                    &scr,
+                ).await;
+            });
+        }
         _ => {}
     }
     Ok(None)
@@ -242,8 +427,10 @@ async fn longpoll_run(
     device_id: &str,
     key: &SharedKey,
     event_tx: &mpsc::UnboundedSender<AgentEvent>,
-    result_tx: &mpsc::UnboundedSender<WireResult>,
-    result_rx: &mut mpsc::UnboundedReceiver<WireResult>,
+    outbound_tx: &mpsc::UnboundedSender<Outbound>,
+    outbound_rx: &mut mpsc::UnboundedReceiver<Outbound>,
+    _pty_mgr: &Arc<PtyManager>,
+    #[cfg(feature = "screen")] _screen_mgr: &Arc<ScreenManager>,
 ) -> Result<()> {
     let base = server.trim_end_matches('/').to_string();
     let url = format!("{base}/agent/connect?device_id={device_id}");
@@ -251,13 +438,23 @@ async fn longpoll_run(
         .timeout(Duration::from_secs(120))
         .build()?;
     loop {
-        // сначала отправляем накопленные результаты
-        let pending = drain_results(result_rx).await;
+        // Сначала отправляем накопленные результаты команд (только CommandResult;
+        // streaming-сообщения в long-poll не поддерживаем — для них нужен WS).
+        let pending = drain_results(outbound_rx).await;
         if !pending.is_empty() {
-            let body = serde_json::json!({ "device_id": device_id, "results": pending });
-            let post_url = format!("{base}/agent/connect");
-            if let Err(e) = client.post(&post_url).json(&body).send().await {
-                warn!("отправка результатов: {e}");
+            let results: Vec<WireResult> = pending
+                .into_iter()
+                .filter_map(|o| match o {
+                    Outbound::CommandResult(r) => Some(r),
+                    _ => None,
+                })
+                .collect();
+            if !results.is_empty() {
+                let body = serde_json::json!({ "device_id": device_id, "results": results });
+                let post_url = format!("{base}/agent/connect");
+                if let Err(e) = client.post(&post_url).json(&body).send().await {
+                    warn!("отправка результатов: {e}");
+                }
             }
         }
         let resp = client.get(&url).send().await.context("long-poll request")?;
@@ -276,7 +473,7 @@ async fn longpoll_run(
                     }
                 }
                 let key = key.clone();
-                let tx = result_tx.clone();
+                let tx = outbound_tx.clone();
                 tokio::spawn(async move {
                     if let Some(res) = handle_command(&key, &env).await {
                         let _ = tx.send(res);
@@ -287,11 +484,11 @@ async fn longpoll_run(
     }
 }
 
-/// Собрать накопленные результаты из канала без блокировки.
-async fn drain_results(rx: &mut mpsc::UnboundedReceiver<WireResult>) -> Vec<WireResult> {
+/// Собрать накопленные исходящие сообщения без блокировки.
+async fn drain_results(rx: &mut mpsc::UnboundedReceiver<Outbound>) -> Vec<Outbound> {
     let mut out = Vec::new();
-    while let Ok(res) = rx.try_recv() {
-        out.push(res);
+    while let Ok(ob) = rx.try_recv() {
+        out.push(ob);
     }
     out
 }

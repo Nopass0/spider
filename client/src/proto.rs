@@ -14,6 +14,23 @@ pub mod msg {
     pub const SERVER_INFO: &str = "server.info";
     pub const PING: &str = "ping";
     pub const PONG: &str = "pong";
+
+    // Streaming-терминал (PTY).
+    pub const TERMINAL_OPEN: &str = "terminal.open";
+    pub const TERMINAL_INPUT: &str = "terminal.input";
+    pub const TERMINAL_RESIZE: &str = "terminal.resize";
+    pub const TERMINAL_CLOSE: &str = "terminal.close";
+    pub const TERMINAL_OUTPUT: &str = "terminal.output";
+    pub const TERMINAL_EXIT: &str = "terminal.exit";
+
+    // Трансляция экрана (MJPEG).
+    pub const SCREEN_START: &str = "screen.start";
+    pub const SCREEN_STOP: &str = "screen.stop";
+    pub const SCREEN_FRAME: &str = "screen.frame";
+
+    // Скриншоты.
+    pub const SCREENSHOT_SNAP: &str = "screenshot.snap";
+    pub const SCREENSHOT_DONE: &str = "screenshot.done";
 }
 
 /// Команда сервер → агент.
@@ -82,4 +99,97 @@ pub struct LongPollOut {
     #[serde(default)]
     pub commands: Vec<crate::crypto::Envelope>,
     pub info: Option<ServerInfo>,
+}
+
+// ===========================================================================
+// Streaming-терминал (PTY)
+// ===========================================================================
+
+/// Создать PTY-сессию (admin → agent).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireTerminalOpen {
+    pub session_id: String,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+/// Байты ввода в PTY (admin → agent).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireTerminalInput {
+    pub session_id: String,
+    pub data_b64: String,
+}
+
+/// Изменить размер PTY (admin → agent).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireTerminalResize {
+    pub session_id: String,
+    pub cols: u16,
+    pub rows: u16,
+}
+
+/// Закрыть PTY (admin → agent).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireTerminalClose {
+    pub session_id: String,
+}
+
+/// Поток вывода PTY (agent → admin).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireTerminalOutput {
+    pub session_id: String,
+    pub data_b64: String,
+}
+
+/// PTY завершён (agent → admin).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireTerminalExit {
+    pub session_id: String,
+    pub exit_code: i32,
+}
+
+// ===========================================================================
+// Трансляция экрана (MJPEG)
+// ===========================================================================
+
+/// Начать захват (admin → agent).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireScreenStart {
+    pub session_id: String,
+    pub fps: u32,
+    pub quality: u32,
+}
+
+/// Остановить захват (admin → agent).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireScreenStop {
+    pub session_id: String,
+}
+
+/// JPEG-кадр (agent → admin).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireScreenFrame {
+    pub session_id: String,
+    pub frame_b64: String,
+    pub w: u32,
+    pub h: u32,
+}
+
+// ===========================================================================
+// Скриншоты
+// ===========================================================================
+
+/// Сделать одиночный кадр (admin → agent).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireScreenshotSnap {
+    pub session_id: String,
+}
+
+/// Кадр готов (agent → admin).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireScreenshotDone {
+    pub session_id: String,
+    pub frame_b64: String,
+    pub w: u32,
+    pub h: u32,
 }

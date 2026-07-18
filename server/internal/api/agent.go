@@ -271,6 +271,17 @@ func (a *API) readAgentLoop(ctx context.Context, deviceID string, sess *crypto.S
 		case crypto.MsgPing:
 			pong, _ := crypto.SealEnvelope(sess, crypto.MsgPong, map[string]string{"t": "1"})
 			_ = writeWSJSON(ctx, c, pong)
+		case crypto.MsgTerminalOutput, crypto.MsgTerminalExit,
+			crypto.MsgScreenFrame, crypto.MsgScreenshotDone:
+			// Streaming-трафик: расшифровываем сырой payload и ретранслируем
+			// только админам, подписанным на это устройство (через /admin/devices/{id}/stream).
+			if raw, err := sess.DecryptEnvelope(env); err == nil {
+				a.hub.SendToAdminsOf(deviceID, hub.AdminEvent{
+					Type:     env.Type,
+					DeviceID: deviceID,
+					Payload:  json.RawMessage(raw),
+				})
+			}
 		}
 	}
 }
@@ -315,7 +326,8 @@ type wsAgentSink struct {
 }
 
 func newWSAgentSink(c *websocket.Conn, sess *crypto.Session, log *slog.Logger) *wsAgentSink {
-	s := &wsAgentSink{conn: c, sess: sess, log: log, out: make(chan crypto.Envelope, 32), done: make(chan struct{})}
+	// Буфер 256: поток кадров экрана может быть плотным; не хотим дропать.
+	s := &wsAgentSink{conn: c, sess: sess, log: log, out: make(chan crypto.Envelope, 256), done: make(chan struct{})}
 	return s
 }
 

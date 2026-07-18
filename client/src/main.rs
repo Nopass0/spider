@@ -12,6 +12,9 @@ mod crypto;
 mod enroll;
 mod executor;
 mod proto;
+mod pty;
+#[cfg(feature = "screen")]
+mod screen;
 mod sysinfo_collector;
 mod transport;
 #[cfg(feature = "self-update")]
@@ -112,6 +115,20 @@ async fn run_agent(state_path: &std::path::PathBuf, server: &str, enroll_token: 
                     info!("сервер: commands_enabled={}", i.commands_enabled)
                 }
                 transport::AgentEvent::TransportSwitched(t) => info!("транспорт: {t}"),
+                transport::AgentEvent::TerminalOpened { session_id } => {
+                    info!("▶ терминал открыт: {session_id}")
+                }
+                transport::AgentEvent::TerminalClosed { session_id, exit_code } => {
+                    info!("■ терминал закрыт: {session_id} (exit={exit_code})")
+                }
+                #[cfg(feature = "screen")]
+                transport::AgentEvent::ScreenStarted { session_id, fps } => {
+                    info!("▶ трансляция экрана: {session_id} ({fps} fps)")
+                }
+                #[cfg(feature = "screen")]
+                transport::AgentEvent::ScreenStopped { session_id } => {
+                    info!("■ трансляция экрана остановлена: {session_id}")
+                }
             }
         }
     });

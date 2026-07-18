@@ -97,10 +97,14 @@ impl ExecOutcome {
 }
 
 /// Построить Command под текущую ОС.
+///
+/// На Windows оборачиваем команду в `chcp 65001` — переключаем кодовую
+/// страницу консоли на UTF-8, иначе cmd.exe выводит в OEM-кодировке (CP866)
+/// и панель показывает кракозябры.
 fn shell_command(command: &str) -> Command {
     if cfg!(target_os = "windows") {
         let mut c = Command::new("cmd");
-        c.args(["/C", command]);
+        c.args(["/C", &format!("chcp 65001 >nul & {command}")]);
         c
     } else {
         let mut c = Command::new("sh");

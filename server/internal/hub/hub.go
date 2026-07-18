@@ -42,9 +42,10 @@ type AdminSink interface {
 
 // Hub — центральный реестр.
 type Hub struct {
-	mu     sync.RWMutex
-	agents map[string]AgentSink     // device_id -> sink
-	admins map[AdminSink]struct{}   // множество активных sink-ов панели
+	mu       sync.RWMutex
+	agents   map[string]AgentSink     // device_id -> sink
+	admins   map[AdminSink]struct{}   // множество активных sink-ов панели
+	subs     map[string]map[AdminSink]struct{} // device_id -> множество админ-синков, подписанных на него
 }
 
 // New создаёт пустой hub.
@@ -52,6 +53,7 @@ func New() *Hub {
 	return &Hub{
 		agents: make(map[string]AgentSink),
 		admins: make(map[AdminSink]struct{}),
+		subs:   make(map[string]map[AdminSink]struct{}),
 	}
 }
 
@@ -139,9 +141,54 @@ func (h *Hub) Broadcast(ev AdminEvent) {
 	}
 }
 
+// SubscribeAdminToDevice подписывает admin-sink на события конкретного устройства
+// (terminal.output, screen.frame и т.п.). Возвращает функцию отписки.
+// Используется двунаправленным stream-WS для направленной доставки agent→admin.
+func (h *Hub) SubscribeAdminToDevice(deviceID string, sink AdminSink) func() {
+	h.mu.Lock()
+	m, ok := h.subs[deviceID]
+	if !ok {
+		m = make(map[AdminSink]struct{})
+		h.subs[deviceID] = m
+	}
+	m[sink] = struct{}{}
+	h.mu.Unlock()
+
+	return func() {
+		h.mu.Lock()
+		if m, ok := h.subs[deviceID]; ok {
+			delete(m, sink)
+			if len(m) == 0 {
+				delete(h.subs, deviceID)
+			}
+		}
+		h.mu.Unlock()
+	}
+}
+
+// SendToAdminsOf рассылает событие только админам, подписанным на устройство.
+// Используется для тяжёлого потокового трафика (terminal/screen), чтобы не
+// дублировать его во все открытые панели.
+func (h *Hub) SendToAdminsOf(deviceID string, ev AdminEvent) {
+	h.mu.RLock()
+	m := h.subs[deviceID]
+	sinks := make([]AdminSink, 0, len(m))
+	for s := range m {
+		sinks = append(sinks, s)
+	}
+	h.mu.RUnlock()
+	for _, s := range sinks {
+		s.SendEvent(ev)
+	}
+}
+
 // CountAgents/CountAdmins — для метрик и тестов.
 func (h *Hub) CountAgents() int { h.mu.RLock(); defer h.mu.RUnlock(); return len(h.agents) }
 func (h *Hub) CountAdmins() int { h.mu.RLock(); defer h.mu.RUnlock(); return len(h.admins) }
+// CountDeviceSubs — число админ-подписок на устройство (для тестов/метрик).
+func (h *Hub) CountDeviceSubs(deviceID string) int {
+	h.mu.RLock(); defer h.mu.RUnlock(); return len(h.subs[deviceID])
+}
 
 // --- Готовые реализации sink ---
 

@@ -12,11 +12,13 @@ name = "spider-agent"
 path = "src/main.rs"
 
 [features]
-default = ["autostart", "self-update"]
+default = ["autostart", "self-update", "screen"]
 # Управление добавлением в автозапуск (systemd unit / Windows Service).
 autostart = []
 # Автообновление с проверкой ed25519-подписи (атомарная замена + рестарт).
 self-update = ["dep:ed25519-dalek", "dep:zip"]
+# Трансляция экрана + скриншоты (захват через xcap, JPEG через image).
+screen = ["dep:xcap", "dep:image"]
 
 [dependencies]
 # async runtime
@@ -42,6 +44,12 @@ clap = { version = "4", features = ["derive", "env"] }
 toml = "0.8"
 # system info
 sysinfo = "0.32"
+# PTY (интерактивный терминал, win+linux без внешних либ)
+portable-pty = "0.8"
+# Захват экрана (feature `screen`)
+xcap = { version = "0.4", optional = true }
+# JPEG-энкодинг кадров (feature `screen`)
+image = { version = "0.25", optional = true, default-features = false, features = ["jpeg"] }
 # logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
