@@ -56,8 +56,9 @@ export function TerminalView({ deviceId }: TerminalProps) {
     term.writeln('\x1b[36m▶ подключение к терминалу…\x1b[0m');
 
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const url = `${proto}://${location.host}/admin/devices/${deviceId}/stream?token=${encodeURIComponent(key)}`;
-    const ws = new WebSocket(url);
+    // Авторизация через subprotocol bearer.<key> (query режется reverse-proxy на WS-upgrade).
+    const url = `${proto}://${location.host}/admin/devices/${deviceId}/stream`;
+    const ws = new WebSocket(url, [`bearer.${key}`]);
     wsRef.current = ws;
 
     let opened = false;

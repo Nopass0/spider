@@ -22,7 +22,7 @@ import (
 //
 // Авторизация: ?token=ADMIN_KEY (WS из браузера не шлёт кастомные заголовки).
 func (a *API) adminStream(w http.ResponseWriter, r *http.Request) {
-	if !checkAdminToken(r, a.cfg.AdminKey) && r.URL.Query().Get("token") != a.cfg.AdminKey {
+	if !wsAuth(r, a.cfg.AdminKey) {
 		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
@@ -33,8 +33,11 @@ func (a *API) adminStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Согласуем subprotocol bearer.* (для обратной связи браузеру, что токен принят).
+	subproto := wsBearerSubproto(r)
 	c, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		OriginPatterns: []string{originHost(a.cfg.PublicURL)},
+		Subprotocols:   []string{subproto},
 	})
 	if err != nil {
 		return

@@ -35,8 +35,11 @@ export function useEvents(opts: UseEventsOptions = {}): void {
 
     const connect = () => {
       const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-      const url = `${proto}://${location.host}/admin/events?token=${encodeURIComponent(key)}`;
-      ws = new WebSocket(url);
+      // Авторизация через subprotocol bearer.<key>: браузер не может ставить
+      // кастомные заголовки на new WebSocket, а query-параметр режется рядом
+      // reverse-proxy (включая Caddy) на WS-upgrade.
+      const url = `${proto}://${location.host}/admin/events`;
+      ws = new WebSocket(url, [`bearer.${key}`]);
       ws.onmessage = (ev) => {
         let event: AdminEvent;
         try {

@@ -33,8 +33,8 @@ export function ScreenView({ deviceId }: ScreenViewProps) {
     const key = getAdminKey();
     if (!key) return;
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const url = `${proto}://${location.host}/admin/devices/${deviceId}/stream?token=${encodeURIComponent(key)}`;
-    const ws = new WebSocket(url);
+    const url = `${proto}://${location.host}/admin/devices/${deviceId}/stream`;
+    const ws = new WebSocket(url, [`bearer.${key}`]);
     wsRef.current = ws;
 
     ws.onmessage = (ev) => {
@@ -90,8 +90,8 @@ export function ScreenView({ deviceId }: ScreenViewProps) {
     const key = getAdminKey();
     if (!key) return;
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const url = `${proto}://${location.host}/admin/devices/${deviceId}/stream?token=${encodeURIComponent(key)}`;
-    const ws = new WebSocket(url);
+    const url = `${proto}://${location.host}/admin/devices/${deviceId}/stream`;
+    const ws = new WebSocket(url, [`bearer.${key}`]);
     ws.onopen = () => {
       ws.send(
         JSON.stringify({ type: 'screenshot.snap', session_id: sessionIdRef.current + '-snap' }),
