@@ -1,10 +1,14 @@
 /**
- * Страница устройства: сист.инфо + отправка команды + история с live-выводом.
+ * Страница устройства: сист.инфо + табы Консоль/Терминал/Экран.
+ *
+ * - Консоль: история команд + отправка разовой команды (request/response).
+ * - Терминал: интерактивный PTY (xterm.js, как SSH).
+ * - Экран: MJPEG-трансляция + скриншоты.
  */
 import { useCallback, useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { motion } from 'motion/react';
-import { ArrowLeft, Send, Trash2, Terminal } from 'lucide-react';
+import { ArrowLeft, Send, Trash2, SquareTerminal, Monitor } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -14,6 +18,10 @@ import { EnqueueCommandSchema, type Command } from '@/schemas';
 import { decodeB64, formatBytes, formatTime } from '@/lib/utils';
 import { useDevicesStore } from '@/stores/devices';
 import { useEvents } from '@/hooks/useEvents';
+import { TerminalView } from '@/components/Terminal';
+import { ScreenView } from '@/components/ScreenView';
+
+type Tab = 'console' | 'terminal' | 'screen';
 
 export function DeviceDetailPage() {
   const { id = '' } = useParams();
@@ -25,6 +33,7 @@ export function DeviceDetailPage() {
   const [history, setHistory] = useState<Command[]>([]);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>('console');
 
   const loadHistory = useCallback(async () => {
     try {
@@ -113,31 +122,49 @@ export function DeviceDetailPage() {
         </Card>
       )}
 
-      <Card className="p-4">
-        <form onSubmit={send} className="flex gap-2">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary">
-            <Terminal size={18} />
-          </div>
-          <Input
-            placeholder="введите консольную команду…"
-            value={command}
-            onChange={(e) => setCommand(e.target.value)}
-            className="font-mono"
-          />
-          <Button type="submit" disabled={sending || !command.trim()}>
-            <Send size={16} /> Отправить
-          </Button>
-        </form>
-        {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
-      </Card>
+      {/* Табы: Консоль / Терминал / Экран */}
+      <div className="flex gap-1 border-b">
+        <TabButton active={tab === 'console'} onClick={() => setTab('console')} icon={<Send size={14} />}>
+          Консоль
+        </TabButton>
+        <TabButton active={tab === 'terminal'} onClick={() => setTab('terminal')} icon={<SquareTerminal size={14} />}>
+          Терминал
+        </TabButton>
+        <TabButton active={tab === 'screen'} onClick={() => setTab('screen')} icon={<Monitor size={14} />}>
+          Экран
+        </TabButton>
+      </div>
 
-      <div className="flex flex-col gap-2">
-        <h2 className="text-sm font-semibold text-muted-foreground">История команд</h2>
-        {history.map((c) => (
-          <motion.div
-            key={c.id}
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
+      {tab === 'terminal' && <TerminalView deviceId={id} />}
+      {tab === 'screen' && <ScreenView deviceId={id} />}
+
+      {tab === 'console' && (
+        <>
+          <Card className="p-4">
+            <form onSubmit={send} className="flex gap-2">
+              <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-primary">
+                <Send size={18} />
+              </div>
+              <Input
+                placeholder="введите консольную команду…"
+                value={command}
+                onChange={(e) => setCommand(e.target.value)}
+                className="font-mono"
+              />
+              <Button type="submit" disabled={sending || !command.trim()}>
+                <Send size={16} /> Отправить
+              </Button>
+            </form>
+            {error && <p className="mt-2 text-sm text-destructive">{error}</p>}
+          </Card>
+
+          <div className="flex flex-col gap-2">
+            <h2 className="text-sm font-semibold text-muted-foreground">История команд</h2>
+            {history.map((c) => (
+              <motion.div
+                key={c.id}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
           >
             <Card className="p-4">
               <div className="mb-2 flex items-center justify-between gap-2">
@@ -167,7 +194,35 @@ export function DeviceDetailPage() {
           </Card>
         )}
       </div>
+        </>
+      )}
     </div>
+  );
+}
+
+function TabButton({
+  active,
+  onClick,
+  icon,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`flex items-center gap-2 border-b-2 px-4 py-2 text-sm font-medium transition-colors ${
+        active
+          ? 'border-primary text-primary'
+          : 'border-transparent text-muted-foreground hover:text-foreground'
+      }`}
+    >
+      {icon}
+      {children}
+    </button>
   );
 }
 

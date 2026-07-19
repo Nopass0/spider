@@ -59,6 +59,9 @@ func (a *API) Router() http.Handler {
 	admin.HandleFunc("POST /admin/devices/{id}/commands", a.adminEnqueueCommand)
 	admin.HandleFunc("GET /admin/devices/{id}/commands", a.adminListCommands)
 	admin.HandleFunc("GET /admin/devices/{id}/stream", a.adminStream) // WS: terminal/screen
+	admin.HandleFunc("POST /admin/devices/{id}/screenshots", a.adminSaveScreenshot)
+	admin.HandleFunc("GET /admin/devices/{id}/screenshots", a.adminListScreenshots)
+	admin.HandleFunc("GET /admin/screenshots/{id}", a.adminGetScreenshotFile)
 	admin.HandleFunc("GET /admin/commands/{id}", a.adminGetCommand)
 	admin.HandleFunc("POST /admin/enrollments", a.adminCreateEnrollment)
 	admin.HandleFunc("GET /admin/enrollments", a.adminListEnrollments)

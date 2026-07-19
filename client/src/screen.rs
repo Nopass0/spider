@@ -117,3 +117,40 @@ fn encode_jpeg(img: &image::RgbaImage, quality: u8) -> Result<(Vec<u8>, u32, u32
         .map_err(|e| anyhow!("jpeg encode: {e}"))?;
     Ok((out, w, h))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[cfg(feature = "screen")]
+    fn snapshot_returns_jpeg() {
+        // На CI/headless xcap может не найти монитор — допустим обе ветви.
+        match ScreenManager::snapshot() {
+            Ok((bytes, w, h)) => {
+                assert!(!bytes.is_empty(), "JPEG не должен быть пустым");
+                // JPEG magic: FF D8
+                assert_eq!(bytes[0], 0xFF, "первый байт JPEG");
+                assert_eq!(bytes[1], 0xD8, "второй байт JPEG");
+                assert!(w > 0 && h > 0, "размеры > 0: {w}x{h}");
+            }
+            Err(e) => {
+                // headless-окружение без монитора — тест пропускаем.
+                eprintln!("screen snapshot недоступен (headless?): {e}");
+            }
+        }
+    }
+
+    #[test]
+    fn screen_manager_constructs() {
+        let _ = ScreenManager::new();
+    }
+
+    #[test]
+    fn start_zero_fps_errors() {
+        let mgr = ScreenManager::new();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let err = rt.block_on(mgr.start("s", 0, 60, |_, _, _| {}));
+        assert!(err.is_err(), "fps=0 должен дать ошибку");
+    }
+}

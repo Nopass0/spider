@@ -15,16 +15,19 @@ package store
 import (
 	"context"
 	"database/sql"
-	_ "embed" // для миграций
+	"embed"
 	"errors"
 	"fmt"
+	"io/fs"
+	"sort"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
 
-//go:embed migrations/001_init.sql
-var schemaSQL string
+//go:embed migrations/*.sql
+var migrationsFS embed.FS
 
 // Store — обёртка над *sql.DB с типизированными методами.
 type Store struct {
@@ -45,11 +48,36 @@ func New(ctx context.Context, path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("store: ping: %w", err)
 	}
-	if _, err := db.ExecContext(ctx, schemaSQL); err != nil {
+	if err := applyMigrations(ctx, db); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("store: migrate: %w", err)
+		return nil, err
 	}
 	return &Store{db: db}, nil
+}
+
+// applyMigrations применяет все .sql файлы из migrations/ в алфавитном порядке.
+func applyMigrations(ctx context.Context, db *sql.DB) error {
+	entries, err := fs.ReadDir(migrationsFS, "migrations")
+	if err != nil {
+		return fmt.Errorf("store: read migrations dir: %w", err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".sql") {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		raw, err := migrationsFS.ReadFile("migrations/" + name)
+		if err != nil {
+			return fmt.Errorf("store: read migration %s: %w", name, err)
+		}
+		if _, err := db.ExecContext(ctx, string(raw)); err != nil {
+			return fmt.Errorf("store: apply migration %s: %w", name, err)
+		}
+	}
+	return nil
 }
 
 // Close закрывает соединение с БД.
