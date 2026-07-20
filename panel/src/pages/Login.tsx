@@ -13,14 +13,23 @@ export function LoginPage() {
   const [key, setKey] = useState('');
   const [error, setError] = useState<string | null>(null);
 
-  const submit = (e: React.FormEvent) => {
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (key.trim().length < 8) {
       setError('Ключ слишком короткий (минимум 8 символов)');
       return;
     }
     setError(null);
-    login(key.trim());
+    setBusy(true);
+    try {
+      await login(key.trim());
+    } catch {
+      setError('не удалось войти');
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -54,8 +63,8 @@ export function LoginPage() {
             />
           </div>
           {error && <p className="text-sm text-destructive">{error}</p>}
-          <Button type="submit" className="w-full">
-            <ShieldCheck size={16} /> Войти
+          <Button type="submit" className="w-full" disabled={busy}>
+            <ShieldCheck size={16} /> {busy ? 'Вход…' : 'Войти'}
           </Button>
         </form>
       </motion.div>

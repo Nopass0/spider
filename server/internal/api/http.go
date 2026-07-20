@@ -50,7 +50,11 @@ func (a *API) Router() http.Handler {
 	mux.HandleFunc("GET /agent/connect", a.handleLongPoll)
 	mux.HandleFunc("GET /agent/ws", a.handleAgentWS)
 
-	// --- Admin API (Bearer ADMIN_KEY) ---
+	// --- Login/logout (ставят cookie spider_token для браузерных WS) ---
+	mux.HandleFunc("POST /admin/login", a.adminLogin)
+	mux.HandleFunc("DELETE /admin/login", a.adminLogout)
+
+	// --- Admin API (Bearer ADMIN_KEY или cookie spider_token) ---
 	admin := http.NewServeMux()
 	admin.HandleFunc("GET /admin/devices", a.adminListDevices)
 	admin.HandleFunc("GET /admin/devices/{id}", a.adminGetDevice)
@@ -81,11 +85,11 @@ func (a *API) Router() http.Handler {
 // Auth middleware
 // ===========================================================================
 
-// requireAdmin проверяет Bearer ADMIN_KEY (constant-time) перед передачей
-// запроса в admin subrouter.
+// requireAdmin проверяет Bearer ADMIN_KEY ИЛИ cookie spider_token перед передачей
+// запроса в admin subrouter. Cookie — чтобы браузерные WS могли авторизоваться.
 func (a *API) requireAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !checkAdminToken(r, a.cfg.AdminKey) {
+		if !wsAuth(r, a.cfg.AdminKey) {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}

@@ -83,10 +83,17 @@ func (s *wsAdminSink) Done() <-chan struct{} { return make(chan struct{}) }
 // Query-параметр намеренно НЕ используется: некоторые reverse-proxy (включая
 // отдельные конфигурации Caddy) обрезают query-string на WS-upgrade.
 func wsAuth(r *http.Request, expectedKey string) bool {
+	// 1) Authorization: Bearer (для не-браузерных клиентов).
 	if checkAdminToken(r, expectedKey) {
 		return true
 	}
-	// Subprotocol bearer.<key> из Sec-WebSocket-Protocol (для браузеров).
+	// 2) Cookie spider_token (для браузерных WS — браузер не может ставить
+	// кастомные заголовки на new WebSocket, а query/subprotocol режутся рядом
+	// reverse-proxy при апгрейде; cookie проходит всегда).
+	if c, err := r.Cookie("spider_token"); err == nil && constantTimeEqual(c.Value, expectedKey) {
+		return true
+	}
+	// 3) Subprotocol bearer.<key> (fallback, если reverse-proxy пропускает).
 	for _, proto := range r.Header.Values("Sec-WebSocket-Protocol") {
 		for _, p := range splitHeaderTokens(proto) {
 			if len(p) > len("bearer.") && p[:len("bearer.")] == "bearer." {
