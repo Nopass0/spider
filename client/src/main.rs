@@ -1,10 +1,20 @@
 //! Точка входа агента Spider.
 //!
-//! Подкоманды:
-//! - `run` — основной режим (enroll при первом запуске + транспорт WS/long-poll);
-//! - `status` — показать текущее состояние;
-//! - `autostart install|remove|status` — управление автозапуском (feature);
-//! - `update` — применить обновление (feature).
+//! Режимы запуска:
+//! - **без аргументов** (`spider-agent.exe` двойным кликом) — GUI-режим:
+//!   иконка в трее + автоматическое подключение к серверу (по сохранённому
+//!   state). Консольное окно не появляется. В трее: статус / «Открыть панель» / «Выход».
+//! - `run` — CLI-режим (enroll + транспорт, в консоли);
+//! - `status`, `autostart`, `update` — служебные подкоманды.
+//!
+//! Для первого запуска в GUI-режиме нужно один раз зарегистрировать устройство
+//! через `spider-agent run --server <URL> --enroll-token <TOKEN> --yes` (state
+//! сохранится), дальше двойной клик по exe сразу подключает.
+//!
+//! На Windows консольное окно убирается через `#![windows_subsystem = "windows"]`
+//! — но это ломает `println!`, поэтому включаем только в release.
+
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 mod autostart;
 mod config;
@@ -16,6 +26,7 @@ mod pty;
 #[cfg(feature = "screen")]
 mod screen;
 mod sysinfo_collector;
+mod tray;
 mod transport;
 #[cfg(feature = "self-update")]
 mod update;
@@ -28,23 +39,44 @@ use config::{Cli, Command};
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 
-#[tokio::main]
-async fn main() {
-    if let Err(e) = real_main().await {
+fn main() {
+    if let Err(e) = real_main() {
         error!("{e:#}");
         std::process::exit(1);
     }
 }
 
-async fn real_main() -> Result<()> {
-    // Инициализация логирования (JSON в stdout; уровень через RUST_LOG).
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+/// Синхронная точка входа: разбирает CLI. Без подкоманды → GUI-режим (tray
+/// в главном потоке, tokio-агент в отдельном). С подкомандой → async-CLI.
+fn real_main() -> Result<()> {
+    init_logging();
+
+    // Если подкоманды нет — GUI-режим (двойной клик по exe).
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let has_subcommand = args
+        .first()
+        .map(|a| !a.starts_with('-'))
+        .unwrap_or(false);
+
+    if !has_subcommand {
+        return run_gui();
+    }
+
+    // CLI-режим — обычный async.
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(cli_main())
+}
+
+fn init_logging() {
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
         .init();
+}
 
+async fn cli_main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Run {
@@ -63,7 +95,136 @@ async fn real_main() -> Result<()> {
     }
 }
 
-/// Основной режим агента.
+/// GUI-режим: tray в главном потоке (требование tray-icon), агент в отдельном.
+fn run_gui() -> Result<()> {
+    let (evt_tx, cmd_rx, holder) = tray::build_tray();
+
+    // Агента запускаем в отдельном потоке со своим tokio-рантаймом.
+    let agent_handle = std::thread::spawn(move || {
+        let rt = match tokio::runtime::Runtime::new() {
+            Ok(r) => r,
+            Err(e) => {
+                error!("tokio runtime: {e}");
+                return;
+            }
+        };
+        rt.block_on(gui_agent_loop(evt_tx, cmd_rx));
+    });
+
+    // Tray event-loop в ГЛАВНОМ потоке — блокирует до «Выход» (шлёт Quit в cmd_rx).
+    tray::run_event_loop(&holder);
+
+    // После «Выход» агент выйдет из recv() и завершится.
+    let _ = agent_handle.join();
+    Ok(())
+}
+
+/// Цикл агента в GUI-режиме. Крутится в отдельном потоке, ждёт Quit через cmd_rx.
+async fn gui_agent_loop(
+    evt_tx: std::sync::mpsc::Sender<tray::TrayEvent>,
+    cmd_rx: std::sync::mpsc::Receiver<tray::TrayCmd>,
+) {
+    let state_path = std::path::PathBuf::from("spider-state.toml");
+    let server_url = std::env::var("SPIDER_SERVER")
+        .unwrap_or_else(|_| "https://spider.lowkey.su".to_string());
+
+    let state = match resolve_state(&state_path, &server_url).await {
+        Ok(s) => s,
+        Err(e) => {
+            error!("GUI: state: {e}");
+            let _ = evt_tx.send(tray::TrayEvent::Status(
+                "требуется регистрация (запустите с --enroll-token)".to_string(),
+            ));
+            wait_quit(cmd_rx);
+            return;
+        }
+    };
+
+    let key_bytes = match crypto::b64_decode(&state.key_b64) {
+        Ok(b) if b.len() == crypto::KEY_SIZE => b,
+        _ => {
+            let _ = evt_tx.send(tray::TrayEvent::Status("state повреждён".to_string()));
+            wait_quit(cmd_rx);
+            return;
+        }
+    };
+    let mut key_arr = [0u8; crypto::KEY_SIZE];
+    key_arr.copy_from_slice(&key_bytes);
+    let key = transport::SharedKey::new(key_arr);
+
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+    let server_url = state.server.clone();
+    let device_id = state.device_id.clone();
+    let evt_tx2 = evt_tx.clone();
+
+    // Логгер событий + проброс статуса в трей.
+    let logger = tokio::spawn(async move {
+        let mut last = String::new();
+        while let Some(ev) = event_rx.recv().await {
+            if let transport::AgentEvent::TransportSwitched(t) = ev {
+                let s = match t {
+                    "websocket" => {
+                        format!("онлайн: {}", device_id.chars().take(8).collect::<String>())
+                    }
+                    other => format!("транспорт: {other}"),
+                };
+                if s != last {
+                    last = s.clone();
+                    let _ = evt_tx2.send(tray::TrayEvent::Status(s));
+                }
+            }
+        }
+    });
+
+    let _ = evt_tx.send(tray::TrayEvent::Status(format!(
+        "онлайн: {}",
+        state.device_id.chars().take(8).collect::<String>()
+    )));
+
+    // Для transport — отдельные клоны (logger уже забрал device_id/server_url).
+    let transport_handle = tokio::spawn({
+        let server = state.server.clone();
+        let dev = state.device_id.clone();
+        async move { transport::run(&server, &dev, key, event_tx).await }
+    });
+
+    // Переносим блокирующий cmd_rx в async — ждём Quit, после чего выходим.
+    let quit = tokio::task::spawn_blocking(move || wait_quit(cmd_rx));
+    tokio::select! {
+        _ = quit => {}
+        _ = transport_handle => {}
+    }
+    logger.abort();
+}
+
+/// Ждать «Выход» (блокирующе). Используется в GUI-режиме.
+fn wait_quit(cmd_rx: std::sync::mpsc::Receiver<tray::TrayCmd>) {
+    while let Ok(cmd) = cmd_rx.recv() {
+        if matches!(cmd, tray::TrayCmd::Quit) {
+            return;
+        }
+    }
+}
+
+/// Загрузить state. Если state-файла нет — пробуем enroll по env-токену
+/// (SPIDER_ENROLL_TOKEN) в тихом режиме (yes=true).
+async fn resolve_state(
+    state_path: &std::path::PathBuf,
+    server_url: &str,
+) -> Result<config::State> {
+    if let Some(s) = config::State::load_optional(state_path)? {
+        return Ok(s);
+    }
+    // Тихий enroll по env-токену (для GUI — без подтверждения).
+    if let Ok(token) = std::env::var("SPIDER_ENROLL_TOKEN") {
+        let s = enroll::run_enrollment(server_url, &token, true).await?;
+        s.save(state_path).context("сохранение state")?;
+        return Ok(s);
+    }
+    Err(anyhow!("нет state и нет SPIDER_ENROLL_TOKEN"))
+}
+
+/// CLI-режим агента: enroll + транспорт, с логированием в stdout.
 async fn run_agent(state_path: &std::path::PathBuf, server: &str, enroll_token: Option<&str>, yes: bool) -> Result<()> {
     // 1. Загрузить или создать state.
     let state = match config::State::load_optional(state_path)? {
@@ -72,7 +233,6 @@ async fn run_agent(state_path: &std::path::PathBuf, server: &str, enroll_token: 
             s
         }
         None => {
-            // Первый запуск: нужен enroll-токен.
             let token = enroll_token.ok_or_else(|| {
                 anyhow!(
                     "отсутствует state-файл (первый запуск). \
@@ -89,10 +249,7 @@ async fn run_agent(state_path: &std::path::PathBuf, server: &str, enroll_token: 
     // 2. Развернуть ключ сессии.
     let key_bytes = crypto::b64_decode(&state.key_b64)?;
     if key_bytes.len() != crypto::KEY_SIZE {
-        return Err(anyhow!(
-            "ключ сессии в state повреждён ({} байт)",
-            key_bytes.len()
-        ));
+        return Err(anyhow!("ключ сессии в state повреждён ({} байт)", key_bytes.len()));
     }
     let mut key_arr = [0u8; crypto::KEY_SIZE];
     key_arr.copy_from_slice(&key_bytes);
@@ -103,7 +260,6 @@ async fn run_agent(state_path: &std::path::PathBuf, server: &str, enroll_token: 
     let server_url = state.server.clone();
     let device_id = state.device_id.clone();
 
-    // задача-логгер событий
     let logger = tokio::spawn(async move {
         while let Some(ev) = event_rx.recv().await {
             match ev {
@@ -133,7 +289,6 @@ async fn run_agent(state_path: &std::path::PathBuf, server: &str, enroll_token: 
         }
     });
 
-    // 4. Главный цикл транспорта (бесконечный, с реконнектами).
     let result = transport::run(&server_url, &device_id, key, event_tx).await;
     logger.abort();
     result

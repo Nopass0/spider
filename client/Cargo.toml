@@ -17,8 +17,8 @@ default = ["autostart", "self-update", "screen"]
 autostart = []
 # Автообновление с проверкой ed25519-подписи (атомарная замена + рестарт).
 self-update = ["dep:ed25519-dalek", "dep:zip"]
-# Трансляция экрана + скриншоты (захват через xcap, JPEG через image).
-screen = ["dep:xcap", "dep:image"]
+# Трансляция экрана + скриншоты (захват через xcap; image нужен всегда — иконка).
+screen = ["dep:xcap"]
 
 [dependencies]
 # async runtime
@@ -48,8 +48,10 @@ sysinfo = "0.32"
 portable-pty = "0.8"
 # Захват экрана (feature `screen`)
 xcap = { version = "0.4", optional = true }
-# JPEG-энкодинг кадров (feature `screen`)
-image = { version = "0.25", optional = true, default-features = false, features = ["jpeg"] }
+# JPEG-энкодинг кадров (feature `screen`) + иконка трея
+image = { version = "0.25", optional = false, default-features = false, features = ["jpeg", "png"] }
+# Иконка системного трея (требует event-loop в главном потоке)
+tray-icon = "0.21"
 # logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
