@@ -37,11 +37,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: client
-      - run: cargo build --release --no-default-features --features autostart,self-update,screen
-      # Тесты БЕЗ tray (tray-icon тянет GTK — недоступен на headless ubuntu runner).
-      # tray-feature тестируется локально/в release на Windows runner.
-      - run: cargo test --no-default-features --features autostart,self-update,screen
-      - run: cargo clippy --no-default-features --features autostart,self-update,screen -- -D warnings
+      - run: cargo build --release --no-default-features --features autostart,self-update
+      # Тесты БЕЗ tray и screen: tray-icon тянет GTK, xcap — X11; оба недоступны
+      # на headless ubuntu runner. Эти фичи тестируются локально и в Windows-релизе.
+      - run: cargo test --no-default-features --features autostart,self-update
+      - run: cargo clippy --no-default-features --features autostart,self-update -- -D warnings
         continue-on-error: true
 
   panel:
