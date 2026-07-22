@@ -18,9 +18,14 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             archive: spider-agent-linux-amd64.tar.gz
+            # Linux: без tray (GTK недоступен в кросс-сборке на ubuntu). screen
+            # для Linux тоже условно — xcap тянет X11; если упадёт — соберём без.
+            features: --no-default-features --features autostart,self-update
           - target: x86_64-pc-windows-gnu
             archive: spider-agent-windows-amd64.zip
             ext: .exe
+            # Windows: все фичи (tray, screen, autostart, self-update).
+            features: --all-features
     defaults:
       run:
         working-directory: client
@@ -37,7 +42,7 @@ jobs:
         env:
           # Публичный ключ проверки обновлений (hex, 32 байта).
           SIGNING_PUBKEY: ${{ secrets.SIGNING_PUBKEY }}
-        run: cargo build --release --all-features --target ${{ matrix.target }}
+        run: cargo build --release ${{ matrix.features }} --target ${{ matrix.target }}
 
       - name: Prepare binary
         run: |

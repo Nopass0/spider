@@ -12,13 +12,17 @@ name = "spider-agent"
 path = "src/main.rs"
 
 [features]
-default = ["autostart", "self-update", "screen"]
+default = ["autostart", "self-update", "screen", "tray"]
 # Управление добавлением в автозапуск (systemd unit / Windows Service).
 autostart = []
 # Автообновление с проверкой ed25519-подписи (атомарная замена + рестарт).
 self-update = ["dep:ed25519-dalek", "dep:zip"]
 # Трансляция экрана + скриншоты (захват через xcap; image нужен всегда — иконка).
 screen = ["dep:xcap"]
+# Иконка системного трея + GUI-режим. Только Windows (на Linux tray-icon тянет
+# GTK, что ломает без-headless сборку и требует системных либ). На Linux без
+# этой feature агент запускается в фоне без иконки.
+tray = ["dep:tray-icon"]
 
 [dependencies]
 # async runtime
@@ -50,8 +54,8 @@ portable-pty = "0.8"
 xcap = { version = "0.4", optional = true }
 # JPEG-энкодинг кадров (feature `screen`) + иконка трея
 image = { version = "0.25", optional = false, default-features = false, features = ["jpeg", "png"] }
-# Иконка системного трея (требует event-loop в главном потоке)
-tray-icon = "0.21"
+# Иконка системного трея (требует event-loop в главном потоке; только Windows).
+tray-icon = { version = "0.21", optional = true }
 # logging
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }

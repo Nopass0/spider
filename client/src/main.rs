@@ -26,6 +26,7 @@ mod pty;
 #[cfg(feature = "screen")]
 mod screen;
 mod sysinfo_collector;
+#[cfg(feature = "tray")]
 mod tray;
 mod transport;
 #[cfg(feature = "self-update")]
@@ -95,31 +96,54 @@ async fn cli_main() -> Result<()> {
     }
 }
 
-/// GUI-режим: tray в главном потоке (требование tray-icon), агент в отдельном.
+/// GUI-режим: с треем (Windows) или headless-фоном (Linux без tray feature).
 fn run_gui() -> Result<()> {
-    let (evt_tx, cmd_rx, holder) = tray::build_tray();
+    #[cfg(feature = "tray")]
+    {
+        let (evt_tx, cmd_rx, holder) = tray::build_tray();
+        let agent_handle = std::thread::spawn(move || {
+            let rt = match tokio::runtime::Runtime::new() {
+                Ok(r) => r,
+                Err(e) => {
+                    error!("tokio runtime: {e}");
+                    return;
+                }
+            };
+            rt.block_on(gui_agent_loop(evt_tx, cmd_rx));
+        });
+        tray::run_event_loop(&holder);
+        let _ = agent_handle.join();
+        return Ok(());
+    }
 
-    // Агента запускаем в отдельном потоке со своим tokio-рантаймом.
-    let agent_handle = std::thread::spawn(move || {
-        let rt = match tokio::runtime::Runtime::new() {
-            Ok(r) => r,
-            Err(e) => {
-                error!("tokio runtime: {e}");
-                return;
-            }
-        };
-        rt.block_on(gui_agent_loop(evt_tx, cmd_rx));
-    });
-
-    // Tray event-loop в ГЛАВНОМ потоке — блокирует до «Выход» (шлёт Quit в cmd_rx).
-    tray::run_event_loop(&holder);
-
-    // После «Выход» агент выйдет из recv() и завершится.
-    let _ = agent_handle.join();
-    Ok(())
+    // Без трея: агент в фоне, главный поток ждёт SIGINT/SIGTERM (Linux) или
+    // просто крутится (Windows без tray — не предполагается, но не падаем).
+    #[cfg(not(feature = "tray"))]
+    {
+        let (evt_tx, _evt_rx) = std::sync::mpsc::channel::<HeadlessEvent>();
+        let agent_handle = std::thread::spawn(move || {
+            let rt = match tokio::runtime::Runtime::new() {
+                Ok(r) => r,
+                Err(e) => {
+                    error!("tokio runtime: {e}");
+                    return;
+                }
+            };
+            rt.block_on(gui_agent_loop_headless(evt_tx));
+        });
+        info!("Spider Agent запущен в headless-режиме (без иконки трея). Останов: SIGINT/Ctrl+C.");
+        // Ждём сигнала или завершения агента.
+        let _ = agent_handle.join();
+        Ok(())
+    }
 }
 
-/// Цикл агента в GUI-режиме. Крутится в отдельном потоке, ждёт Quit через cmd_rx.
+/// Событие headless-режима (заглушка, для единообразия с tray).
+#[cfg(not(feature = "tray"))]
+enum HeadlessEvent {}
+
+/// Цикл агента в GUI-режиме (с треем). Ждёт Quit через cmd_rx.
+#[cfg(feature = "tray")]
 async fn gui_agent_loop(
     evt_tx: std::sync::mpsc::Sender<tray::TrayEvent>,
     cmd_rx: std::sync::mpsc::Receiver<tray::TrayCmd>,
@@ -157,7 +181,6 @@ async fn gui_agent_loop(
     let device_id = state.device_id.clone();
     let evt_tx2 = evt_tx.clone();
 
-    // Логгер событий + проброс статуса в трей.
     let logger = tokio::spawn(async move {
         let mut last = String::new();
         while let Some(ev) = event_rx.recv().await {
@@ -181,14 +204,12 @@ async fn gui_agent_loop(
         state.device_id.chars().take(8).collect::<String>()
     )));
 
-    // Для transport — отдельные клоны (logger уже забрал device_id/server_url).
     let transport_handle = tokio::spawn({
         let server = state.server.clone();
         let dev = state.device_id.clone();
         async move { transport::run(&server, &dev, key, event_tx).await }
     });
 
-    // Переносим блокирующий cmd_rx в async — ждём Quit, после чего выходим.
     let quit = tokio::task::spawn_blocking(move || wait_quit(cmd_rx));
     tokio::select! {
         _ = quit => {}
@@ -197,13 +218,48 @@ async fn gui_agent_loop(
     logger.abort();
 }
 
-/// Ждать «Выход» (блокирующе). Используется в GUI-режиме.
+/// Ждать «Выход» из трея (блокирующе).
+#[cfg(feature = "tray")]
 fn wait_quit(cmd_rx: std::sync::mpsc::Receiver<tray::TrayCmd>) {
     while let Ok(cmd) = cmd_rx.recv() {
         if matches!(cmd, tray::TrayCmd::Quit) {
             return;
         }
     }
+}
+
+/// Headless-цикл агента (без трея). Просто крутит транспорт.
+#[cfg(not(feature = "tray"))]
+async fn gui_agent_loop_headless<E>(_evt_tx: std::sync::mpsc::Sender<E>) {
+    let state_path = std::path::PathBuf::from("spider-state.toml");
+    let server_url = std::env::var("SPIDER_SERVER")
+        .unwrap_or_else(|_| "https://spider.lowkey.su".to_string());
+
+    let state = match resolve_state(&state_path, &server_url).await {
+        Ok(s) => s,
+        Err(e) => {
+            error!("headless: state: {e}");
+            return;
+        }
+    };
+    let key_bytes = match crypto::b64_decode(&state.key_b64) {
+        Ok(b) if b.len() == crypto::KEY_SIZE => b,
+        _ => return,
+    };
+    let mut key_arr = [0u8; crypto::KEY_SIZE];
+    key_arr.copy_from_slice(&key_bytes);
+    let key = transport::SharedKey::new(key_arr);
+
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel();
+    let logger = tokio::spawn(async move {
+        while let Some(ev) = event_rx.recv().await {
+            if let transport::AgentEvent::TransportSwitched(t) = ev {
+                info!("транспорт: {t}");
+            }
+        }
+    });
+    let _ = transport::run(&state.server, &state.device_id, key, event_tx).await;
+    logger.abort();
 }
 
 /// Загрузить state. Если state-файла нет — пробуем enroll по env-токену
