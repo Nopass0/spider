@@ -56,15 +56,16 @@ jobs:
         run: (cd pkg && zip -r ../${{ matrix.archive }} .)
 
       - name: Sign (ed25519, опционально)
-        # Подпись только если задан секрет SIGNING_KEY (hex, 64 байта приватного ключа).
-        # Если секрета нет — бинари публикуются без подписи (self-update будет отключён
-        # в клиенте до тех пор, пока SIGNING_PUBKEY не вшит). См. docs/DEPLOY.md.
-        if: ${{ secrets.SIGNING_KEY != '' }}
+        # Подпись только если задан секрет SIGNING_KEY (hex, 32 байта приватного).
+        # NB: secrets нельзя использовать в if — проверяем внутри run через env.
         env:
           SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
         run: |
-          if [ -z "$SIGNING_KEY" ]; then echo "SIGNING_KEY пуст — пропускаю подпись"; exit 0; fi
-          # ed25519-подпись через python3 + cryptography (есть на ubuntu-latest).
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "SIGNING_KEY не задан — подпись пропущена (создаю .sig-заглушку)"
+            touch ${{ matrix.archive }}.sig
+            exit 0
+          fi
           pip install --quiet cryptography >/dev/null 2>&1 || pip3 install --quiet cryptography >/dev/null 2>&1
           python3 - <<PY
           from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -79,13 +80,9 @@ jobs:
           sig = sk.sign(data)
           with open("${{ matrix.archive }}.sig", "wb") as f:
               f.write(sig)
-          # Публичный ключ выводим для справки (вшивается в клиент через SIGNING_PUBKEY).
           vk = sk.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
           print("SIGNING_PUBKEY =", binascii.hexlify(vk).decode())
           PY
-      - name: (no key) заглушка, чтобы upload-artifact нашёл .sig
-        if: ${{ secrets.SIGNING_KEY == '' }}
-        run: touch ${{ matrix.archive }}.sig
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.archive }}
