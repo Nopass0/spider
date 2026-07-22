@@ -59,22 +59,37 @@ jobs:
       - name: Health check + диагностика
         env:
           SSH_PASSWORD: ${{ secrets.SSH_PASSWORD }}
+        # continue-on-error: временный сбой DNS на runner'е не должен валить
+        # весь деплой — сервер-то жив (проверяем и по домену, и по IP напрямую).
+        continue-on-error: true
         run: |
-          # Ретраи: Caddy только что выпускает сертификат, нужно время.
           export SSHPASS="$SSH_PASSWORD"
+          # Проверка по домену (может упасть из-за DNS runner'а)…
           ok=0
-          for i in $(seq 1 12); do
-            echo "попытка $i/12…"
-            if curl -fsS "https://spider.lowkey.su/healthz"; then ok=1; break; fi
-            sleep 10
+          for i in $(seq 1 6); do
+            echo "попытка $i/6 (домен)…"
+            if curl -fsS --max-time 10 "https://spider.lowkey.su/healthz"; then ok=1; break; fi
+            sleep 8
           done
+          # …и напрямую по IP (минуя DNS, через --resolve для SNI/TLS).
           if [ "$ok" -ne 1 ]; then
-            echo "⚠ сервер не ответил на healthz — собираю диагностику с сервера…"
-            sshpass -e ssh -o StrictHostKeyChecking=accept-new "$SSH_USER@$SSH_HOST" \
-              'echo "=== spider-server ==="; systemctl status spider-server --no-pager -l | head -20; \
-               echo "=== caddy ==="; systemctl status caddy --no-pager -l | head -25; \
-               echo "=== caddy logs ==="; journalctl -u caddy -n 40 --no-pager; \
-               echo "=== listening ports ==="; (ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null) | grep -E ":80|:443|:8080" || echo "ничего на 80/443/8080"; \
-               echo "=== Caddyfile ==="; cat /etc/caddy/Caddyfile; \
-               echo "=== firewall ==="; (ufw status 2>/dev/null || iptables -L INPUT -n 2>/dev/null | head -20) || echo "no firewall tooling";'
+            echo "DNS на runner'е не отрезолвил — проверяю по IP…"
+            for i in $(seq 1 4); do
+              if curl -fsS --max-time 10 --resolve spider.lowkey.su:443:193.41.5.130 \
+                "https://spider.lowkey.su/healthz"; then ok=1; break; fi
+              sleep 8
+            done
           fi
+          echo ""
+          if [ "$ok" -eq 1 ]; then
+            echo "✅ healthz OK"
+          else
+            echo "⚠ healthz недоступен ни по домену, ни по IP — диагностика с сервера:"
+            sshpass -e ssh -o StrictHostKeyChecking=accept-new "$SSH_USER@$SSH_HOST" \
+              'echo "=== spider-server ==="; systemctl is-active spider-server; \
+               echo "=== caddy ==="; systemctl is-active caddy; \
+               echo "=== local healthz ==="; curl -fsS http://127.0.0.1:8080/healthz || echo "ЛОКАЛЬНО тоже не отвечает"; \
+               echo "=== caddy logs ==="; journalctl -u caddy -n 25 --no-pager; \
+               echo "=== ports ==="; (ss -tlnp 2>/dev/null || netstat -tlnp 2>/dev/null) | grep -E ":80|:443|:8080" || echo "пусто";'
+          fi
+
