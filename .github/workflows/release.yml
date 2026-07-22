@@ -12,19 +12,20 @@ permissions:
 jobs:
   build-client:
     name: Client ${{ matrix.target }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
             archive: spider-agent-linux-amd64.tar.gz
-            # Linux: без tray (GTK недоступен в кросс-сборке на ubuntu). screen
-            # для Linux тоже условно — xcap тянет X11; если упадёт — соберём без.
+            # Linux: без tray (GTK) и screen (X11) — недоступны в кросс-сборке.
             features: --no-default-features --features autostart,self-update
-          - target: x86_64-pc-windows-gnu
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
             archive: spider-agent-windows-amd64.zip
             ext: .exe
-            # Windows: все фичи (tray, screen, autostart, self-update).
+            # Windows: все фичи (tray, screen, autostart, self-update) — native MSVC.
             features: --all-features
     defaults:
       run:
@@ -39,12 +40,13 @@ jobs:
           workspaces: client
 
       - name: Build
+        shell: bash
         env:
-          # Публичный ключ проверки обновлений (hex, 32 байта).
           SIGNING_PUBKEY: ${{ secrets.SIGNING_PUBKEY }}
         run: cargo build --release ${{ matrix.features }} --target ${{ matrix.target }}
 
       - name: Prepare binary
+        shell: bash
         run: |
           mkdir -p pkg
           cp target/${{ matrix.target }}/release/spider-agent${{ matrix.ext }} pkg/
@@ -52,12 +54,14 @@ jobs:
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: tar -czf ${{ matrix.archive }} -C pkg spider-agent
       - name: Archive (windows)
-        if: matrix.target == 'x86_64-pc-windows-gnu'
-        run: (cd pkg && zip -r ../${{ matrix.archive }} .)
+        if: matrix.target == 'x86_64-pc-windows-msvc'
+        shell: pwsh
+        run: Compress-Archive -Path pkg/spider-agent.exe -DestinationPath ${{ matrix.archive }}
 
       - name: Sign (ed25519, опционально)
         # Подпись только если задан секрет SIGNING_KEY (hex, 32 байта приватного).
         # NB: secrets нельзя использовать в if — проверяем внутри run через env.
+        shell: bash
         env:
           SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
         run: |
